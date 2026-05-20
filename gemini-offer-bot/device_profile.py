@@ -1,11 +1,20 @@
 """
 device_profile.py — Simulates a Pixel 10 Pro running Android 16 (Chrome 136)
-Each call to build_chrome_options() returns a fresh, randomised device identity
-so every user session looks like a distinct real device to Google's servers.
+
+Fixes applied vs original:
+  • Removed duplicate --user-agent argument (mobileEmulation already sets it;
+    having both causes Chrome to ignore the emulation UA).
+  • Removed --incognito: it conflicts with mobileEmulation experimental option
+    and causes Chrome to silently drop the mobile profile.
+  • Removed --disable-web-security: breaks Google's CORS-based login flow.
+  • Replaced driver.implicitly_wait() with explicit waits only — mixing both
+    causes unpredictable timeout races in Selenium 4.
+  • Added --remote-debugging-port=0 so CDP commands work reliably in headless.
+  • Added --disable-background-networking and similar flags to reduce Google's
+    bot-detection surface.
 """
 
 import random
-import string
 import uuid
 
 from selenium import webdriver
@@ -17,51 +26,39 @@ import config
 
 # ── Static device fingerprint constants ───────────────────────────────────────
 
-# Chrome 136 on Android 16 / Pixel 10 Pro
-_CHROME_VERSION   = "136.0.7103.92"
-_ANDROID_VERSION  = "16"
-_DEVICE_MODEL     = "Pixel 10 Pro"
-_WEBKIT_VERSION   = "537.36"
+_CHROME_VERSION  = "136.0.7103.92"
+_ANDROID_VERSION = "16"
+_DEVICE_MODEL    = "Pixel 10 Pro"
+_BUILD_ID        = "BP1A.250505.002"
+_WEBKIT_VERSION  = "537.36"
 
-# Full desktop-style UA that still carries the Android/Pixel token
-# (triggers Google's mobile-aware flow without the pure-mobile viewport lock)
 USER_AGENT = (
-    f"Mozilla/5.0 (Linux; Android {_ANDROID_VERSION}; {_DEVICE_MODEL} Build/BP1A.250505.002; wv) "
+    f"Mozilla/5.0 (Linux; Android {_ANDROID_VERSION}; {_DEVICE_MODEL} "
+    f"Build/{_BUILD_ID}; wv) "
     f"AppleWebKit/{_WEBKIT_VERSION} (KHTML, like Gecko) "
     f"Chrome/{_CHROME_VERSION} Mobile Safari/{_WEBKIT_VERSION}"
 )
 
-# Sec-CH-UA values matching Chrome 136
-SEC_CH_UA = (
-    '"Chromium";v="136", "Google Chrome";v="136", "Not-A.Brand";v="99"'
-)
-SEC_CH_UA_MOBILE   = "?1"
-SEC_CH_UA_PLATFORM = '"Android"'
-
-# Screen / viewport — Pixel 10 Pro logical resolution (412 × 915 dp)
-VIEWPORT_WIDTH  = 412
-VIEWPORT_HEIGHT = 915
-
-# Pixel density
+# Pixel 10 Pro logical resolution (412 × 915 dp)
+VIEWPORT_WIDTH     = 412
+VIEWPORT_HEIGHT    = 915
 DEVICE_PIXEL_RATIO = 3.5
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _random_device_id() -> str:
-    """Return a random 16-char hex string that mimics an Android device ID."""
     return uuid.uuid4().hex[:16].upper()
 
 
 def _random_mac() -> str:
-    """Generate a random MAC address (used only in the JS fingerprint override)."""
     return ":".join(
         "".join(random.choices("0123456789ABCDEF", k=2)) for _ in range(6)
     )
 
 
 def _random_screen_noise() -> int:
-    """Small ±2 px noise on viewport to avoid a static fingerprint."""
+    """±2 px noise so every session has a slightly different viewport."""
     return random.randint(-2, 2)
 
 
@@ -69,66 +66,68 @@ def _random_screen_noise() -> int:
 
 def build_chrome_options(headless: bool = True) -> Options:
     """
-    Return a configured ChromeOptions object that impersonates a
-    Pixel 10 Pro (Android 16) device with a fresh random identity.
-
-    Parameters
-    ----------
-    headless : bool
-        Run Chrome without a visible window (True for server / Replit use).
+    Return ChromeOptions that impersonate a Pixel 10 Pro (Android 16) device
+    with a fresh random identity on every call.
     """
     options = Options()
 
-    # ── Headless mode ─────────────────────────────────────────────────────────
+    # ── Headless ──────────────────────────────────────────────────────────────
     if headless:
-        options.add_argument("--headless=new")          # Chrome 112+ headless
+        options.add_argument("--headless=new")       # Chrome 112+ headless API
         options.add_argument("--disable-gpu")
-        options.add_argument("--no-sandbox")            # Required in Replit/Docker
-        options.add_argument("--disable-dev-shm-usage") # Avoid /dev/shm OOM
+        options.add_argument("--no-sandbox")         # required in Replit/Docker
+        options.add_argument("--disable-dev-shm-usage")  # avoid /dev/shm OOM
 
-    # ── Binary path (set in config) ────────────────────────────────────────
+    # ── Binary path ───────────────────────────────────────────────────────────
     if config.CHROME_BINARY_PATH:
         options.binary_location = config.CHROME_BINARY_PATH
 
-    # ── Window / viewport ─────────────────────────────────────────────────────
+    # ── Viewport ──────────────────────────────────────────────────────────────
     w = VIEWPORT_WIDTH  + _random_screen_noise()
     h = VIEWPORT_HEIGHT + _random_screen_noise()
     options.add_argument(f"--window-size={w},{h}")
 
-    # ── User-Agent ────────────────────────────────────────────────────────────
-    options.add_argument(f"--user-agent={USER_AGENT}")
-
-    # ── Privacy / anti-detection flags ────────────────────────────────────────
+    # ── Anti-detection ────────────────────────────────────────────────────────
     options.add_argument("--disable-blink-features=AutomationControlled")
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option("useAutomationExtension", False)
 
-    # ── Performance / stability ───────────────────────────────────────────────
+    # ── Stability / performance ───────────────────────────────────────────────
     options.add_argument("--disable-extensions")
     options.add_argument("--disable-infobars")
     options.add_argument("--disable-notifications")
     options.add_argument("--disable-popup-blocking")
     options.add_argument("--ignore-certificate-errors")
-    options.add_argument("--allow-running-insecure-content")
-    options.add_argument("--disable-web-security")
+    options.add_argument("--disable-background-networking")
+    options.add_argument("--disable-default-apps")
+    options.add_argument("--disable-sync")
+    options.add_argument("--metrics-recording-only")
+    options.add_argument("--no-first-run")
+    options.add_argument("--safebrowsing-disable-auto-update")
     options.add_argument("--lang=en-US")
-    options.add_argument("--accept-lang=en-US,en;q=0.9")
+    # NOTE: --remote-debugging-port=0 lets Chrome pick a free port so CDP works
+    options.add_argument("--remote-debugging-port=0")
 
-    # Fresh profile dir per session (temp dir handled by Selenium automatically)
-    options.add_argument("--incognito")
+    # FIX: --incognito is intentionally NOT set — it conflicts with
+    # mobileEmulation and causes Chrome to silently drop the mobile UA profile.
 
-    # Mobile emulation metadata (used alongside the UA for a consistent profile)
+    # FIX: --disable-web-security is intentionally NOT set — it breaks
+    # Google's CORS-based sign-in flow and causes login failures.
+
+    # ── Mobile emulation ──────────────────────────────────────────────────────
+    # NOTE: mobileEmulation sets the User-Agent internally; do NOT also pass
+    # --user-agent or the two conflict and Google gets a mangled UA string.
     mobile_emulation = {
         "deviceMetrics": {
-            "width":         w,
-            "height":        h,
-            "pixelRatio":    DEVICE_PIXEL_RATIO,
-            "touch":         True,
+            "width":      w,
+            "height":     h,
+            "pixelRatio": DEVICE_PIXEL_RATIO,
+            "touch":      True,
         },
         "userAgent": USER_AGENT,
         "clientHints": {
-            "platform":        "Android",
-            "mobile":          True,
+            "platform": "Android",
+            "mobile":   True,
         },
     }
     options.add_experimental_option("mobileEmulation", mobile_emulation)
@@ -136,26 +135,33 @@ def build_chrome_options(headless: bool = True) -> Options:
     return options
 
 
+# ── Driver builder ────────────────────────────────────────────────────────────
+
 def build_driver(headless: bool = True) -> webdriver.Chrome:
     """
-    Instantiate and return a Chrome WebDriver with the Pixel 10 Pro profile,
-    then inject JS overrides to mask navigator.webdriver and spoof screen info.
+    Instantiate a Chrome WebDriver with the Pixel 10 Pro profile and inject
+    JS overrides to mask navigator.webdriver and spoof hardware/screen info.
 
-    Parameters
-    ----------
-    headless : bool
-        Whether to run in headless mode.
-
-    Returns
-    -------
-    webdriver.Chrome
-        A ready-to-use driver instance.
+    FIX: implicitly_wait() is NOT set here.  Mixing implicit + explicit waits
+    in Selenium 4 causes unpredictable races; we use WebDriverWait exclusively
+    in google_automation.py instead.
     """
     options = build_chrome_options(headless=headless)
-    service = Service(executable_path=config.CHROMEDRIVER_PATH)
-    driver  = webdriver.Chrome(service=service, options=options)
 
-    # ── JS fingerprint overrides ──────────────────────────────────────────────
+    # Use webdriver-manager as fallback if no chromedriver path is configured
+    if config.CHROMEDRIVER_PATH:
+        service = Service(executable_path=config.CHROMEDRIVER_PATH)
+    else:
+        try:
+            from webdriver_manager.chrome import ChromeDriverManager
+            service = Service(ChromeDriverManager().install())
+        except Exception:
+            service = Service()  # let Selenium find it on PATH
+
+    driver = webdriver.Chrome(service=service, options=options)
+    driver.set_page_load_timeout(config.PAGE_LOAD_TIMEOUT)
+
+    # ── JS fingerprint overrides (injected before every page load) ────────────
     device_id = _random_device_id()
     mac       = _random_mac()
 
@@ -163,57 +169,57 @@ def build_driver(headless: bool = True) -> webdriver.Chrome:
         "Page.addScriptToEvaluateOnNewDocument",
         {
             "source": f"""
-                // Hide webdriver flag
+                // 1. Hide webdriver flag
                 Object.defineProperty(navigator, 'webdriver', {{
                     get: () => undefined
                 }});
 
-                // Spoof platform
+                // 2. Spoof platform
                 Object.defineProperty(navigator, 'platform', {{
                     get: () => 'Linux aarch64'
                 }});
 
-                // Spoof app version
+                // 3. Spoof appVersion
                 Object.defineProperty(navigator, 'appVersion', {{
                     get: () => '5.0 (Linux; Android {_ANDROID_VERSION}; {_DEVICE_MODEL})'
                 }});
 
-                // Spoof hardware concurrency (Tensor G5 = 8 cores)
+                // 4. Tensor G5 = 8 cores
                 Object.defineProperty(navigator, 'hardwareConcurrency', {{
                     get: () => 8
                 }});
 
-                // Spoof device memory (12 GB)
+                // 5. 12 GB RAM
                 Object.defineProperty(navigator, 'deviceMemory', {{
                     get: () => 12
                 }});
 
-                // Spoof screen dimensions
+                // 6. Screen dimensions
                 Object.defineProperty(screen, 'width',       {{ get: () => {VIEWPORT_WIDTH} }});
                 Object.defineProperty(screen, 'height',      {{ get: () => {VIEWPORT_HEIGHT} }});
                 Object.defineProperty(screen, 'availWidth',  {{ get: () => {VIEWPORT_WIDTH} }});
                 Object.defineProperty(screen, 'availHeight', {{ get: () => {VIEWPORT_HEIGHT - 48} }});
                 Object.defineProperty(window, 'devicePixelRatio', {{ get: () => {DEVICE_PIXEL_RATIO} }});
 
-                // Unique device fingerprint seed (changes per session)
+                // 7. Unique device seed per session
                 window.__deviceId = '{device_id}';
                 window.__macAddr  = '{mac}';
 
-                // Suppress chrome automation objects
+                // 8. Chrome runtime stub (prevents "chrome is not defined" errors)
                 window.chrome = {{
                     runtime: {{}},
-                    loadTimes: function() {{}},
-                    csi: function() {{}},
+                    loadTimes: function() {{ return {{}}; }},
+                    csi: function() {{ return {{}}; }},
                     app: {{}}
                 }};
 
-                // Sec-CH-UA headers (for fetch/XHR)
+                // 9. userAgentData / Sec-CH-UA
                 Object.defineProperty(navigator, 'userAgentData', {{
                     get: () => ({{
                         brands: [
-                            {{ brand: 'Chromium',       version: '136' }},
-                            {{ brand: 'Google Chrome',  version: '136' }},
-                            {{ brand: 'Not-A.Brand',    version: '99'  }}
+                            {{ brand: 'Chromium',      version: '136' }},
+                            {{ brand: 'Google Chrome', version: '136' }},
+                            {{ brand: 'Not-A.Brand',   version: '99'  }}
                         ],
                         mobile: true,
                         platform: 'Android',
@@ -227,12 +233,20 @@ def build_driver(headless: bool = True) -> webdriver.Chrome:
                         }})
                     }})
                 }});
+
+                // 10. Permissions API stub (prevents fingerprint via denied mic/camera)
+                const _origQuery = window.navigator.permissions
+                    && window.navigator.permissions.query
+                    ? window.navigator.permissions.query.bind(window.navigator.permissions)
+                    : null;
+                if (_origQuery) {{
+                    window.navigator.permissions.query = (parameters) =>
+                        parameters.name === 'notifications'
+                            ? Promise.resolve({{ state: Notification.permission }})
+                            : _origQuery(parameters);
+                }}
             """
         },
     )
-
-    # Timeouts
-    driver.set_page_load_timeout(config.PAGE_LOAD_TIMEOUT)
-    driver.implicitly_wait(2)
 
     return driver

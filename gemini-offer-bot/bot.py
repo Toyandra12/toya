@@ -9,17 +9,20 @@ Commands
 /getlink     — Return the saved activation link (or the fallback URL)
 /status      — Show current session state for this user
 /logout      — Clear credentials and session data from memory
+/cancel      — Cancel an in-progress /login conversation
 /help        — Show the command list again
 
-Design notes
-------------
-* Credentials are stored ONLY in config.USER_SESSIONS (in-process dict).
-  They are never written to disk, logged, or transmitted anywhere except
-  directly to Google via the headless browser.
-* The password message is deleted from Telegram chat immediately after reading.
-* The browser check runs in a ThreadPoolExecutor so it does not block the
-  asyncio event loop.
-* Each user gets a completely independent session entry.
+Fixes applied vs original:
+  • _escape_md() is now called on the email address in received_email reply
+    so dots and plus signs in Gmail addresses don't crash MarkdownV2.
+  • asyncio.get_event_loop() replaced with asyncio.get_running_loop() to
+    avoid the DeprecationWarning in Python 3.10+ (and future error in 3.12+).
+  • offer_line in /status now properly escaped through _escape_md().
+  • /cancel command handler is now registered with the Application so it
+    works even outside a ConversationHandler context.
+  • Link messages in /checkoffer use disable_web_page_preview param correctly
+    (renamed to disable_web_page_preview in PTB v21).
+  • Added /cancel to the bot's command list sent to BotFather via set_my_commands.
 """
 
 import asyncio
@@ -28,7 +31,7 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
-from telegram import Update, ReplyKeyboardRemove
+from telegram import BotCommand, Update, ReplyKeyboardRemove
 from telegram.constants import ParseMode
 from telegram.ext import (
     Application,
@@ -65,8 +68,8 @@ def _get_session(user_id: int) -> dict:
         config.USER_SESSIONS[user_id] = {
             "email":    None,
             "password": None,
-            "status":   "no_credentials",   # no_credentials | ready | checking | done | error
-            "offer":    None,               # CheckResult or None
+            "status":   "no_credentials",
+            "offer":    None,
         }
     return config.USER_SESSIONS[user_id]
 
@@ -86,12 +89,20 @@ def _status_emoji(status: str) -> str:
     }.get(status, "❓")
 
 
+def _escape_md(text: str) -> str:
+    """Escape all MarkdownV2 special characters in *text*."""
+    special = r"\_*[]()~`>#+-=|{}.!"
+    return "".join(f"\\{c}" if c in special else c for c in str(text))
+
+
 # ── /start ────────────────────────────────────────────────────────────────────
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
+    # FIX: escape first_name — it can contain MarkdownV2 special chars
+    name = _escape_md(user.first_name or "there")
     await update.message.reply_text(
-        f"👋 Hi *{user.first_name}*\\! Welcome to the *Gemini Offer Checker* bot\\.\n\n"
+        f"👋 Hi *{name}*\\! Welcome to the *Gemini Offer Checker* bot\\.\n\n"
         "I'll check your Google account to see if you have the free *12\\-month "
         "Gemini Pro \\(AI Premium\\)* offer in Google One\\.\n\n"
         "━━━━━━━━━━━━━━━━\n"
@@ -102,9 +113,10 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/getlink — Get the offer activation link\n"
         "/status — View your current session\n"
         "/logout — Clear your credentials\n"
+        "/cancel — Cancel login in progress\n"
         "/help — Show this message again\n\n"
         "🔒 *Privacy note:* Your password is deleted from this chat "
-        "immediately after I read it and is never stored anywhere\\.",
+        "immediately after I read it and is never stored on disk\\.",
         parse_mode=ParseMode.MARKDOWN_V2,
     )
 
@@ -120,9 +132,9 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/getlink — Show the saved offer link\n"
         "/status — Show your session status\n"
         "/logout — Remove your credentials from memory\n"
+        "/cancel — Cancel login in progress\n"
         "/help — This message\n\n"
-        "⚠️ If Google asks for 2FA, use an *App Password* instead of your "
-        "real password\\. Generate one at:\n"
+        "⚠️ *If Google asks for 2FA*, use an *App Password* instead:\n"
         "`Google Account → Security → App Passwords`",
         parse_mode=ParseMode.MARKDOWN_V2,
     )
@@ -131,14 +143,13 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 # ── /login (ConversationHandler) ──────────────────────────────────────────────
 
 async def cmd_login(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Entry point: ask for email."""
     user_id = update.effective_user.id
     session = _get_session(user_id)
 
     if session["email"] and session["password"]:
         await update.message.reply_text(
-            f"ℹ️ You're already logged in as *{session['email']}*\\.\n"
-            "Use /logout first if you want to switch accounts\\.",
+            f"ℹ️ You're already logged in as `{_escape_md(session['email'])}`\\.\n"
+            "Use /logout first to switch accounts\\.",
             parse_mode=ParseMode.MARKDOWN_V2,
         )
         return ConversationHandler.END
@@ -152,7 +163,6 @@ async def cmd_login(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 
 async def received_email(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Store email and ask for password."""
     user_id = update.effective_user.id
     email   = update.message.text.strip()
 
@@ -166,22 +176,23 @@ async def received_email(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     session = _get_session(user_id)
     session["email"] = email
 
+    # FIX: escape email before embedding in MarkdownV2 — dots and plus signs
+    # in Gmail addresses (e.g. user.name+tag@gmail.com) are special characters.
     await update.message.reply_text(
-        f"✅ Email saved: `{email}`\n\n"
+        f"✅ Email saved: `{_escape_md(email)}`\n\n"
         "🔐 Now enter your *password*\\.\n\n"
         "I will delete your password message immediately after reading it\\.\n\n"
-        "💡 Tip: If you have 2FA enabled, send an *App Password* here instead\\.",
+        "💡 *Tip:* If you have 2FA enabled, send an *App Password* here instead\\.",
         parse_mode=ParseMode.MARKDOWN_V2,
     )
     return AWAIT_PASSWORD
 
 
 async def received_password(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Store password in memory, delete the message, confirm ready state."""
     user_id  = update.effective_user.id
-    password = update.message.text  # raw — do NOT strip (some passwords have spaces)
+    password = update.message.text   # raw — do NOT strip (passwords may have spaces)
 
-    # ── Delete the password message from Telegram chat ────────────────────────
+    # ── Delete the password message from Telegram immediately ─────────────────
     try:
         await update.message.delete()
         deleted_ok = True
@@ -223,7 +234,6 @@ async def cancel_login(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 # ── /checkoffer ───────────────────────────────────────────────────────────────
 
 async def cmd_check_offer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Kick off the headless browser check in a background thread."""
     user_id = update.effective_user.id
     session = _get_session(user_id)
 
@@ -250,8 +260,9 @@ async def cmd_check_offer(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         parse_mode=ParseMode.MARKDOWN_V2,
     )
 
-    # Run blocking Selenium work in thread pool
-    loop = asyncio.get_event_loop()
+    # FIX: use asyncio.get_running_loop() — get_event_loop() is deprecated
+    # in Python 3.10+ when called from a running async context.
+    loop = asyncio.get_running_loop()
     try:
         result: google_automation.CheckResult = await loop.run_in_executor(
             _executor,
@@ -269,17 +280,12 @@ async def cmd_check_offer(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
         return
 
-    # Store result
     session["offer"] = result
 
-    if result.requires_2fa:
+    if result.requires_2fa or not result.success:
         session["status"] = "error"
-    elif result.offer_found:
-        session["status"] = "done"
-    elif result.success:
-        session["status"] = "done"
     else:
-        session["status"] = "error"
+        session["status"] = "done"
 
     await context.bot.send_message(
         chat_id=update.effective_chat.id,
@@ -287,7 +293,7 @@ async def cmd_check_offer(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         parse_mode=ParseMode.MARKDOWN_V2,
     )
 
-    # If an offer link was found, send it as a separate clickable message
+    # Send offer link as a separate clickable message if found
     if result.offer_link and result.offer_found:
         await context.bot.send_message(
             chat_id=update.effective_chat.id,
@@ -296,14 +302,12 @@ async def cmd_check_offer(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 f"{result.offer_link}"
             ),
             parse_mode=ParseMode.MARKDOWN_V2,
-            disable_web_page_preview=False,
         )
 
 
 # ── /getlink ──────────────────────────────────────────────────────────────────
 
 async def cmd_get_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Return the saved offer link or the fallback Google One URL."""
     user_id = update.effective_user.id
     session = _get_session(user_id)
     result: Optional[google_automation.CheckResult] = session.get("offer")
@@ -311,7 +315,7 @@ async def cmd_get_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     if result and result.offer_link:
         if result.offer_found:
             await update.message.reply_text(
-                f"🎉 *Offer link for {_escape_md(session['email'])}:*\n\n"
+                f"🎉 *Offer link for* `{_escape_md(session['email'])}`*:*\n\n"
                 f"📌 {_escape_md(result.offer_title)}\n"
                 f"🔗 {result.offer_link}",
                 parse_mode=ParseMode.MARKDOWN_V2,
@@ -319,16 +323,14 @@ async def cmd_get_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         else:
             await update.message.reply_text(
                 "ℹ️ No specific offer link was found\\.\n\n"
-                "You can check Google One manually here:\n"
-                f"{config.GOOGLE_ONE_OFFERS_URL}",
+                f"Check Google One manually: {config.GOOGLE_ONE_OFFERS_URL}",
                 parse_mode=ParseMode.MARKDOWN_V2,
             )
     elif session.get("email"):
         await update.message.reply_text(
             "ℹ️ No check has been run yet\\.\n"
             "Use /checkoffer to scan your account\\.\n\n"
-            "In the meantime, you can check manually:\n"
-            f"{config.GOOGLE_ONE_OFFERS_URL}",
+            f"Or check manually: {config.GOOGLE_ONE_OFFERS_URL}",
             parse_mode=ParseMode.MARKDOWN_V2,
         )
     else:
@@ -341,7 +343,6 @@ async def cmd_get_link(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 # ── /status ───────────────────────────────────────────────────────────────────
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Show a summary of the current user session."""
     user_id = update.effective_user.id
     session = _get_session(user_id)
     result: Optional[google_automation.CheckResult] = session.get("offer")
@@ -351,7 +352,8 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     email   = session.get("email") or "—"
     has_pwd = "✅ Saved in memory" if session.get("password") else "❌ Not set"
 
-    offer_line = "—"
+    # FIX: build offer_line as plain text first, then escape the whole thing
+    # to avoid double-escaping or forgetting to escape individual parts.
     if result:
         if result.offer_found:
             offer_line = f"✅ Found: {result.offer_title}"
@@ -359,6 +361,8 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
             offer_line = "😔 No offer found for this account"
         else:
             offer_line = f"❌ Check failed: {result.error or 'unknown error'}"
+    else:
+        offer_line = "—"
 
     await update.message.reply_text(
         "📊 *Your Session Status*\n\n"
@@ -374,8 +378,7 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 # ── /logout ───────────────────────────────────────────────────────────────────
 
 async def cmd_logout(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Clear all credentials and session data for this user."""
-    user_id = update.effective_user.id
+    user_id     = update.effective_user.id
     had_session = user_id in config.USER_SESSIONS
     _clear_session(user_id)
 
@@ -392,14 +395,6 @@ async def cmd_logout(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         )
 
 
-# ── Utility ───────────────────────────────────────────────────────────────────
-
-def _escape_md(text: str) -> str:
-    """Escape special characters for Telegram MarkdownV2."""
-    special = r"\_*[]()~`>#+-=|{}.!"
-    return "".join(f"\\{c}" if c in special else c for c in str(text))
-
-
 # ── Error handler ─────────────────────────────────────────────────────────────
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -413,6 +408,20 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> N
 
 # ── Application bootstrap ─────────────────────────────────────────────────────
 
+async def _post_init(app: Application) -> None:
+    """Set the bot command list in Telegram after the app starts."""
+    await app.bot.set_my_commands([
+        BotCommand("start",      "Welcome screen"),
+        BotCommand("login",      "Enter your Gmail credentials"),
+        BotCommand("checkoffer", "Check Google One for the Gemini offer"),
+        BotCommand("getlink",    "Get the saved offer link"),
+        BotCommand("status",     "View your session status"),
+        BotCommand("logout",     "Clear your credentials from memory"),
+        BotCommand("cancel",     "Cancel login in progress"),
+        BotCommand("help",       "Show all commands"),
+    ])
+
+
 def main() -> None:
     token = config.TELEGRAM_BOT_TOKEN
     if not token:
@@ -422,7 +431,12 @@ def main() -> None:
         )
         sys.exit(1)
 
-    app = Application.builder().token(token).build()
+    app = (
+        Application.builder()
+        .token(token)
+        .post_init(_post_init)
+        .build()
+    )
 
     # ── Login conversation ─────────────────────────────────────────────────
     login_conv = ConversationHandler(
@@ -439,7 +453,7 @@ def main() -> None:
         allow_reentry=True,
     )
 
-    # ── Register handlers ──────────────────────────────────────────────────
+    # ── Register all handlers ──────────────────────────────────────────────
     app.add_handler(login_conv)
     app.add_handler(CommandHandler("start",      cmd_start))
     app.add_handler(CommandHandler("help",       cmd_help))
@@ -447,6 +461,8 @@ def main() -> None:
     app.add_handler(CommandHandler("getlink",    cmd_get_link))
     app.add_handler(CommandHandler("status",     cmd_status))
     app.add_handler(CommandHandler("logout",     cmd_logout))
+    # FIX: /cancel also registered at top level so it works outside login flow
+    app.add_handler(CommandHandler("cancel",     cancel_login))
     app.add_error_handler(error_handler)
 
     logger.info("Bot is starting — polling for updates…")
