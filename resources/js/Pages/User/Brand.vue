@@ -1,147 +1,162 @@
-<template>
-  <AppLayout>
-    <div class="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-      <!-- Breadcrumb -->
-      <nav class="flex items-center gap-2 text-sm text-gray-500 mb-6">
-        <Link href="/" class="hover:text-primary-600">Beranda</Link>
-        <span>/</span>
-        <Link :href="`/kategori/${category.slug}`" class="hover:text-primary-600">{{ category.name }}</Link>
-        <span>/</span>
-        <span class="text-gray-800 font-medium">{{ brand.name }}</span>
-      </nav>
-
-      <!-- Brand Header -->
-      <div class="card p-6 mb-6 flex items-center gap-5">
-        <div class="w-16 h-16 rounded-xl bg-primary-50 flex items-center justify-center text-3xl font-bold text-primary-700">
-          {{ brand.name.charAt(0) }}
-        </div>
-        <div>
-          <h1 class="text-2xl font-bold text-gray-900">{{ brand.name }}</h1>
-          <p class="text-sm text-gray-500 mt-1">{{ brand.description || `Top up ${brand.name} mudah dan cepat` }}</p>
-        </div>
-      </div>
-
-      <!-- Form + Products -->
-      <div class="grid grid-cols-1 lg:grid-cols-5 gap-6">
-        <!-- Left: Input Form -->
-        <div class="lg:col-span-2">
-          <div class="card p-5 sticky top-24">
-            <h2 class="text-base font-semibold text-gray-800 mb-4">Masukkan Data</h2>
-            <form @submit.prevent="checkAccount">
-              <div v-for="field in brand.form_fields" :key="field.name" class="mb-4">
-                <label class="label">{{ field.label }} <span v-if="field.required" class="text-red-500">*</span></label>
-                <input
-                  v-model="formData[field.name]"
-                  :type="field.type || 'text'"
-                  :placeholder="field.label"
-                  class="input"
-                  :required="field.required"
-                />
-              </div>
-              <button v-if="needsInquiry" type="submit" :disabled="checkingAccount" class="btn-secondary w-full">
-                <span v-if="checkingAccount" class="animate-spin mr-2">⟳</span>
-                Cek Akun
-              </button>
-            </form>
-
-            <!-- Account info result -->
-            <div v-if="accountInfo" class="mt-3 bg-green-50 border border-green-200 rounded-lg p-3 text-sm text-green-700">
-              <p class="font-medium">{{ accountInfo.nickname || accountInfo.name || 'Akun ditemukan' }}</p>
-              <p v-if="accountInfo.server" class="text-xs text-green-600">Server: {{ accountInfo.server }}</p>
-            </div>
-          </div>
-        </div>
-
-        <!-- Right: Products -->
-        <div class="lg:col-span-3">
-          <h2 class="text-base font-semibold text-gray-800 mb-4">Pilih Nominal</h2>
-          <div class="grid grid-cols-2 gap-3">
-            <button
-              v-for="product in products"
-              :key="product.id"
-              @click="selectProduct(product)"
-              :class="['card p-4 text-left hover:border-primary-400 hover:shadow-md transition-all border-2',
-                selectedProduct?.id === product.id ? 'border-primary-500 bg-primary-50' : 'border-transparent']"
-            >
-              <p class="text-sm font-semibold text-gray-800">{{ product.name }}</p>
-              <p class="text-base font-bold text-primary-600 mt-1">{{ formatRupiah(product.sell_price) }}</p>
-              <span v-if="product.is_featured" class="text-xs text-orange-500 font-medium">⭐ Favorit</span>
-            </button>
-          </div>
-
-          <!-- Proceed -->
-          <div v-if="selectedProduct" class="mt-6 card p-4 border-primary-200 bg-primary-50">
-            <div class="flex justify-between items-center mb-3">
-              <span class="text-sm text-gray-700">Produk dipilih:</span>
-              <span class="font-semibold text-gray-900">{{ selectedProduct.name }}</span>
-            </div>
-            <div class="flex justify-between items-center mb-4">
-              <span class="text-sm text-gray-700">Total:</span>
-              <span class="text-lg font-bold text-primary-700">{{ formatRupiah(selectedProduct.sell_price) }}</span>
-            </div>
-            <Link
-              :href="`/checkout/${selectedProduct.id}?${buildQuery()}`"
-              class="btn-primary w-full text-center"
-            >
-              Lanjut Pembayaran
-            </Link>
-          </div>
-        </div>
-      </div>
-    </div>
-  </AppLayout>
-</template>
-
 <script setup>
-import { ref, reactive, computed } from 'vue';
-import { Link } from '@inertiajs/vue3';
-import axios from 'axios';
-import AppLayout from '@/Layouts/AppLayout.vue';
+/**
+ * Brand — product nominal selection page.
+ * Each product is a tappable card linking to /checkout/{id}.
+ * Out-of-stock or inactive products render the disabled card state.
+ */
+import { computed } from 'vue'
+import { Head, Link } from '@inertiajs/vue3'
+
+import Breadcrumbs from '@/Components/Storefront/Breadcrumbs.vue'
+import EmptyState  from '@/Components/UI/EmptyState.vue'
+import Badge       from '@/Components/UI/Badge.vue'
+import AppButton   from '@/Components/UI/AppButton.vue'
+import { formatRupiah } from '@/composables/useFormat.js'
 
 const props = defineProps({
-  category: Object,
-  brand: Object,
-  products: Array,
-});
+    category: { type: Object, required: true },
+    brand:    { type: Object, required: true },
+    products: { type: Array,  default: () => [] },
+})
 
-const formData = reactive({});
-const selectedProduct = ref(null);
-const checkingAccount = ref(false);
-const accountInfo = ref(null);
+const available = computed(() =>
+    props.products.filter(p => p.is_active && (p.stock === -1 || p.stock > 0))
+)
+const unavailable = computed(() =>
+    props.products.filter(p => !p.is_active || (p.stock !== -1 && p.stock <= 0))
+)
 
-const needsInquiry = computed(() => props.brand.form_fields?.length > 0);
-
-function selectProduct(product) {
-  selectedProduct.value = product;
+function effectivePrice(p) {
+    if (
+        p.is_flash_sale &&
+        p.flash_sale_price &&
+        p.flash_sale_ends_at &&
+        new Date(p.flash_sale_ends_at) > new Date()
+    ) {
+        return Number(p.flash_sale_price)
+    }
+    return Number(p.sell_price)
 }
 
-async function checkAccount() {
-  if (!selectedProduct.value) return;
-  checkingAccount.value = true;
-  accountInfo.value = null;
-  try {
-    const res = await axios.post('/checkout/inquiry', {
-      product_id: selectedProduct.value.id,
-      customer_no: formData[props.brand.form_fields?.[0]?.name] ?? '',
-      zone_id: formData.zone_id ?? '',
-    });
-    accountInfo.value = res.data;
-  } catch (e) {
-    console.error(e);
-  } finally {
-    checkingAccount.value = false;
-  }
-}
-
-function buildQuery() {
-  const params = new URLSearchParams();
-  Object.entries(formData).forEach(([k, v]) => {
-    if (v) params.append(k, v);
-  });
-  return params.toString();
-}
-
-function formatRupiah(amount) {
-  return new Intl.NumberFormat('id-ID', { style: 'currency', currency: 'IDR', minimumFractionDigits: 0 }).format(amount);
+function isOnSale(p) {
+    return effectivePrice(p) < Number(p.sell_price)
 }
 </script>
+
+<template>
+    <Head :title="`${brand.name} — ${category.name}`" />
+
+    <div class="site-container py-6 flex flex-col gap-6">
+        <Breadcrumbs
+            :items="[
+                { label: 'Beranda', href: '/' },
+                { label: category.name, href: `/kategori/${category.slug}` },
+                { label: brand.name },
+            ]"
+        />
+
+        <!-- Brand hero -->
+        <header class="flex items-center gap-4 p-4 rounded-md bg-surface-raised shadow-t4">
+            <div class="shrink-0">
+                <img
+                    v-if="brand.logo"
+                    :src="`/storage/${brand.logo}`"
+                    :alt="brand.name"
+                    class="h-16 w-16 md:h-20 md:w-20 rounded-md object-cover"
+                />
+                <div
+                    v-else
+                    class="h-16 w-16 md:h-20 md:w-20 rounded-md bg-surface-muted flex items-center justify-center text-fg-inverse text-3xl"
+                    aria-hidden="true"
+                >{{ brand.name?.[0]?.toUpperCase() }}</div>
+            </div>
+            <div class="flex-1 min-w-0">
+                <p class="text-xs text-fg-inverse uppercase tracking-wide">{{ category.name }}</p>
+                <h1 class="text-2xl md:text-3xl font-semibold text-fg-primary truncate" :title="brand.name">
+                    {{ brand.name }}
+                </h1>
+                <p v-if="brand.description" class="text-sm text-fg-inverse mt-t5 line-clamp-2">
+                    {{ brand.description }}
+                </p>
+            </div>
+        </header>
+
+        <!-- Available products -->
+        <section v-if="available.length" aria-labelledby="available-heading">
+            <header class="flex items-end justify-between mb-4">
+                <h2 id="available-heading" class="text-2xl font-semibold">Pilih Nominal</h2>
+                <p class="text-sm text-fg-inverse" aria-live="polite">
+                    {{ available.length }} produk tersedia
+                </p>
+            </header>
+
+            <ul
+                class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3"
+                role="list"
+            >
+                <li v-for="product in available" :key="product.id">
+                    <Link
+                        :href="`/checkout/${product.id}`"
+                        class="block h-full p-4 rounded-md bg-surface-raised shadow-t4 hover:shadow-t1 hover:-translate-y-0.5 transition duration-base ease-base focus-visible:shadow-focus"
+                    >
+                        <div class="flex items-start justify-between gap-t5 mb-3 min-h-[28px]">
+                            <Badge v-if="isOnSale(product)" tone="brand">HEMAT</Badge>
+                            <Badge v-else-if="product.is_featured" tone="warn">POPULER</Badge>
+                            <span v-else aria-hidden="true" />
+                            <span class="text-xs text-fg-inverse">{{ product.sku || '' }}</span>
+                        </div>
+
+                        <h3 class="text-md font-medium text-fg-primary mb-3 line-clamp-2" :title="product.name">
+                            {{ product.name }}
+                        </h3>
+
+                        <div class="flex items-baseline gap-t5 flex-wrap">
+                            <span class="text-token-price">{{ formatRupiah(effectivePrice(product)) }}</span>
+                            <span
+                                v-if="isOnSale(product)"
+                                class="text-xs text-fg-inverse line-through"
+                            >
+                                {{ formatRupiah(product.sell_price) }}
+                            </span>
+                        </div>
+                    </Link>
+                </li>
+            </ul>
+        </section>
+
+        <!-- Unavailable products (disabled card state) -->
+        <section v-if="unavailable.length" aria-labelledby="unavailable-heading">
+            <h2 id="unavailable-heading" class="text-lg font-semibold mb-3 text-fg-inverse">
+                Sementara tidak tersedia
+            </h2>
+            <ul
+                class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3"
+                role="list"
+            >
+                <li v-for="product in unavailable" :key="product.id">
+                    <div
+                        class="block h-full p-4 rounded-md bg-surface-raised shadow-t4 opacity-60"
+                        :aria-disabled="true"
+                    >
+                        <Badge tone="neutral">Habis</Badge>
+                        <h3 class="text-md font-medium text-fg-primary mt-3 mb-3 line-clamp-2">
+                            {{ product.name }}
+                        </h3>
+                        <span class="text-token-price">{{ formatRupiah(effectivePrice(product)) }}</span>
+                        <p class="mt-3 text-xs text-fg-inverse">Beri tahu saya saat tersedia.</p>
+                    </div>
+                </li>
+            </ul>
+        </section>
+
+        <EmptyState
+            v-if="!available.length && !unavailable.length"
+            title="Belum ada produk untuk brand ini"
+            description="Kami sedang menambahkan stok. Coba lagi nanti atau jelajahi brand lain."
+        >
+            <AppButton :href="`/kategori/${category.slug}`" variant="primary">
+                Brand lain di {{ category.name }}
+            </AppButton>
+        </EmptyState>
+    </div>
+</template>

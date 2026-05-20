@@ -1,39 +1,56 @@
-<template>
-  <AppLayout>
-    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-      <nav class="flex items-center gap-2 text-sm text-gray-500 mb-6">
-        <Link href="/" class="hover:text-primary-600">Beranda</Link>
-        <span>/</span>
-        <span class="text-gray-800 font-medium">{{ category.name }}</span>
-      </nav>
-
-      <div class="flex items-center gap-3 mb-6">
-        <span class="text-3xl">{{ category.icon }}</span>
-        <h1 class="text-2xl font-bold text-gray-900">{{ category.name }}</h1>
-      </div>
-
-      <div class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4">
-        <Link v-for="brand in brands" :key="brand.id"
-          :href="`/kategori/${category.slug}/${brand.slug}`"
-          class="card p-4 flex flex-col items-center text-center hover:shadow-md hover:border-primary-200 transition-all group">
-          <div class="w-14 h-14 rounded-xl bg-primary-50 flex items-center justify-center text-2xl font-bold text-primary-700 mb-3 group-hover:bg-primary-100 transition-colors">
-            {{ brand.name.charAt(0) }}
-          </div>
-          <p class="text-sm font-semibold text-gray-800 group-hover:text-primary-700 leading-tight">{{ brand.name }}</p>
-        </Link>
-      </div>
-
-      <div v-if="!brands.length" class="text-center py-20">
-        <p class="text-4xl mb-3">🔍</p>
-        <p class="text-gray-500">Belum ada brand dalam kategori ini</p>
-      </div>
-    </div>
-  </AppLayout>
-</template>
-
 <script setup>
-import { Link } from '@inertiajs/vue3';
-import AppLayout from '@/Layouts/AppLayout.vue';
+/**
+ * Category — list all brands within a category.
+ * Composes BrandGrid (data-list, ≤4 lists per UI guideline §4.4).
+ */
+import { Head, Link } from '@inertiajs/vue3'
 
-defineProps({ category: Object, brands: Array });
+import Breadcrumbs from '@/Components/Storefront/Breadcrumbs.vue'
+import BrandGrid   from '@/Components/Storefront/BrandGrid.vue'
+import EmptyState  from '@/Components/UI/EmptyState.vue'
+import AppButton   from '@/Components/UI/AppButton.vue'
+
+defineProps({
+    category: { type: Object, required: true },
+    brands:   { type: Array,  default: () => [] },
+})
 </script>
+
+<template>
+    <Head :title="category.name" />
+
+    <div class="site-container py-6 flex flex-col gap-6">
+        <Breadcrumbs
+            :items="[
+                { label: 'Beranda', href: '/' },
+                { label: category.name },
+            ]"
+        />
+
+        <header class="flex flex-col md:flex-row md:items-end md:justify-between gap-3">
+            <div>
+                <h1 class="text-3xl md:text-4xl font-semibold mb-t5">{{ category.name }}</h1>
+                <p v-if="category.description" class="text-md text-fg-inverse max-w-2xl">
+                    {{ category.description }}
+                </p>
+            </div>
+            <p class="text-sm text-fg-inverse" aria-live="polite">
+                {{ brands.length }} brand tersedia
+            </p>
+        </header>
+
+        <BrandGrid
+            v-if="brands.length"
+            :brands="brands.map(b => ({ ...b, category }))"
+            title="Pilih brand"
+        />
+
+        <EmptyState
+            v-else
+            title="Belum ada brand di kategori ini"
+            description="Kategori ini belum memiliki brand aktif. Coba kategori lain atau lihat semua produk."
+        >
+            <AppButton href="/" variant="primary">Kembali ke beranda</AppButton>
+        </EmptyState>
+    </div>
+</template>
