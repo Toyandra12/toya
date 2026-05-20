@@ -13,6 +13,7 @@
         "ext-pdo": "*",
         "ext-tokenizer": "*",
         "ext-xml": "*",
+        "inertiajs/inertia-laravel": "^1.0",
         "laravel/framework": "^11.0",
         "laravel/sanctum": "^4.0",
         "laravel/tinker": "^2.9",

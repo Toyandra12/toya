@@ -1,38 +1,38 @@
-import './bootstrap';
-import '../css/app.css';
+import { createApp, h } from 'vue'
+import { createInertiaApp, Link } from '@inertiajs/vue3'
+import { createPinia } from 'pinia'
 
-import { createApp, h } from 'vue';
-import { createInertiaApp }  from '@inertiajs/vue3';
-import { resolvePageComponent } from 'laravel-vite-plugin/inertia-helpers';
-import { ZiggyVue } from '../../vendor/tightenco/ziggy';
-import { createPinia } from 'pinia';
-import Vue3Toastify, { toast } from 'vue3-toastify';
-import 'vue3-toastify/dist/index.css';
+import AppLayout from './Layouts/AppLayout.vue'
 
-const appName = import.meta.env.VITE_APP_NAME || 'Toya';
+const appName = import.meta.env.VITE_APP_NAME || 'CINENOVA'
 
 createInertiaApp({
-    title: (title) => title ? `${title} – ${appName}` : appName,
-    resolve: (name) =>
-        resolvePageComponent(
-            `./Pages/${name}.vue`,
-            import.meta.glob('./Pages/**/*.vue'),
-        ),
-    setup({ el, App, props, plugin }) {
-        const pinia = createPinia();
+    title: (title) => (title ? `${title} — ${appName}` : appName),
 
-        return createApp({ render: () => h(App, props) })
+    resolve: async (name) => {
+        const pages = import.meta.glob('./Pages/**/*.vue', { eager: false })
+        const page = (await pages[`./Pages/${name}.vue`]()).default
+
+        // Auto-apply AppLayout to every storefront page that doesn't already
+        // declare a layout. Admin and Auth pages opt out by setting
+        // `defineOptions({ layout: null })` or providing their own.
+        if (page.layout === undefined && !name.startsWith('Admin/')) {
+            page.layout = AppLayout
+        }
+        return page
+    },
+
+    setup({ el, App, props, plugin }) {
+        const app = createApp({ render: () => h(App, props) })
             .use(plugin)
-            .use(ZiggyVue)
-            .use(pinia)
-            .use(Vue3Toastify, {
-                autoClose: 3000,
-                position: 'top-right',
-                theme: 'light',
-            })
-            .mount(el);
+            .use(createPinia())
+            .component('Link', Link)
+
+        app.mount(el)
     },
+
     progress: {
-        color: '#2563eb',
+        color: '#ff1744',
+        showSpinner: false,
     },
-});
+})

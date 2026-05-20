@@ -1,54 +1,212 @@
-@import url('https://fonts.bunny.net/css?family=inter:300,400,500,600,700,800&display=swap');
-
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
+/* ──────────────────────────────────────────────────────────────────────────
+   CINENOVA semantic tokens (canonical export)
+   See docs/ui-guidelines.md
+   ────────────────────────────────────────────────────────────────────────── */
 @layer base {
-  html {
-    scroll-behavior: smooth;
-  }
-  body {
-    @apply font-sans;
-  }
+    :root {
+        /* Typography */
+        --font-family-primary: 'Poppins', system-ui, sans-serif;
+        --font-size-base:    16px;
+        --font-weight-base:  400;
+        --font-line-height-base: 25.6px;
+
+        --font-size-xs:    13.6px;
+        --font-size-sm:    14.4px;
+        --font-size-md:    15.2px;
+        --font-size-lg:    15.68px;
+        --font-size-xl:    16px;
+        --font-size-2xl:   17.6px;
+        --font-size-3xl:   20px;
+        --font-size-4xl:   20.8px;
+
+        /* Color — text */
+        --color-text-primary:   #ffffff;
+        --color-text-secondary: #f5f5f5;
+        --color-text-tertiary:  #ff1744;
+        --color-text-inverse:   #b0b0b0;
+
+        /* Color — surface */
+        --color-surface-base:   #000000;
+        --color-surface-muted:  #1e293b;
+        --color-surface-raised: #2a2a2a;
+        --color-surface-strong: #0a0a0a;
+
+        /* Spacing */
+        --space-1: 1px;
+        --space-2: 4px;
+        --space-3: 5px;
+        --space-4: 6px;
+        --space-5: 8px;
+        --space-6: 10px;
+        --space-7: 12px;
+        --space-8: 12.8px;
+
+        /* Radius */
+        --radius-xs: 10px;
+        --radius-sm: 12px;
+        --radius-md: 16px;
+        --radius-lg: 30px;
+        --radius-xl: 50px;
+
+        /* Shadow */
+        --shadow-1: rgba(220, 20, 60, 0.25) 0px 12px 30px 0px;
+        --shadow-2: rgba(220, 20, 60, 0.4)  0px 0px 20px 0px;
+        --shadow-3: rgba(243, 156, 18, 0.3) 0px 4px 10px 0px;
+        --shadow-4: rgba(0, 0, 0, 0.15)     0px 4px 20px 0px;
+
+        /* Motion */
+        --motion-duration-base: 150ms;
+        --motion-duration-fast: 80ms;
+        --motion-ease-base: cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    /* Document defaults */
+    html {
+        font-family: var(--font-family-primary);
+        font-size: var(--font-size-base);
+        line-height: var(--font-line-height-base);
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+        scroll-behavior: smooth;
+    }
+
+    body {
+        background: var(--color-surface-base);
+        color: var(--color-text-primary);
+        font-weight: var(--font-weight-base);
+    }
+
+    /* Anchor scroll padding so sticky header does not occlude focus */
+    [id] {
+        scroll-margin-top: 80px;
+    }
+
+    /* Focus-visible rule (A11Y-2) — apply to every interactive element that
+       does not opt out via the `focus-custom` class. */
+    :where(a, button, [role="button"], input, select, textarea, summary, [tabindex]):focus-visible {
+        outline: 2px solid var(--color-text-tertiary);
+        outline-offset: 2px;
+        border-radius: var(--radius-xs);
+    }
+
+    /* Disable native outline so focus-visible is the single source of truth. */
+    :where(a, button, [role="button"], input, select, textarea, summary, [tabindex]):focus:not(:focus-visible) {
+        outline: none;
+    }
+
+    /* Selection */
+    ::selection {
+        background: var(--color-text-tertiary);
+        color: var(--color-text-primary);
+    }
+
+    /* Reduced motion (A11Y-10) */
+    @media (prefers-reduced-motion: reduce) {
+        *, *::before, *::after {
+            animation-duration: 0.001ms !important;
+            animation-iteration-count: 1 !important;
+            transition-duration: var(--motion-duration-fast) !important;
+            transition-property: opacity !important;
+            scroll-behavior: auto !important;
+        }
+    }
 }
 
+/* ──────────────────────────────────────────────────────────────────────────
+   Components — only patterns reused by primitive Vue components.
+   ────────────────────────────────────────────────────────────────────────── */
 @layer components {
-  .btn-primary {
-    @apply inline-flex items-center justify-center px-4 py-2 bg-primary-600 text-white
-           text-sm font-medium rounded-lg shadow-sm hover:bg-primary-700
-           focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2
-           disabled:opacity-50 disabled:cursor-not-allowed transition-colors duration-150;
-  }
-  .btn-secondary {
-    @apply inline-flex items-center justify-center px-4 py-2 bg-white text-gray-700
-           text-sm font-medium rounded-lg border border-gray-300 shadow-sm hover:bg-gray-50
-           focus:outline-none focus:ring-2 focus:ring-primary-500 focus:ring-offset-2
-           disabled:opacity-50 disabled:cursor-not-allowed transition-colors duration-150;
-  }
-  .btn-danger {
-    @apply inline-flex items-center justify-center px-4 py-2 bg-red-600 text-white
-           text-sm font-medium rounded-lg shadow-sm hover:bg-red-700
-           focus:outline-none focus:ring-2 focus:ring-red-500 focus:ring-offset-2
-           disabled:opacity-50 disabled:cursor-not-allowed transition-colors duration-150;
-  }
-  .input {
-    @apply block w-full px-3 py-2 text-sm border border-gray-300 rounded-lg
-           focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500
-           placeholder-gray-400 transition-colors duration-150;
-  }
-  .label {
-    @apply block text-sm font-medium text-gray-700 mb-1;
-  }
-  .card {
-    @apply bg-white rounded-xl shadow-sm border border-gray-100;
-  }
-  .badge {
-    @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium;
-  }
-  .badge-success { @apply badge bg-green-100 text-green-800; }
-  .badge-warning { @apply badge bg-yellow-100 text-yellow-800; }
-  .badge-danger  { @apply badge bg-red-100 text-red-800; }
-  .badge-info    { @apply badge bg-blue-100 text-blue-800; }
-  .badge-gray    { @apply badge bg-gray-100 text-gray-800; }
+
+    /* Skip link (A11Y-11) — invisible until focused. */
+    .skip-link {
+        position: absolute;
+        top: -100px;
+        left: var(--space-7);
+        z-index: 100;
+        padding: var(--space-7);
+        background: var(--color-text-tertiary);
+        color: var(--color-text-primary);
+        font-size: var(--font-size-md);
+        font-weight: 600;
+        border-radius: var(--radius-sm);
+        text-decoration: none;
+        transition: top var(--motion-duration-base) var(--motion-ease-base);
+    }
+    .skip-link:focus,
+    .skip-link:focus-visible {
+        top: var(--space-7);
+        outline: 2px solid var(--color-text-primary);
+        outline-offset: 2px;
+    }
+
+    /* Container */
+    .site-container {
+        width: 100%;
+        max-width: 1200px;
+        margin-inline: auto;
+        padding-inline: 16px;
+    }
+    @media (min-width: 768px) {
+        .site-container { padding-inline: 24px; }
+    }
+
+    /* Visually hidden (for sr-only labels) */
+    .vh {
+        position: absolute !important;
+        clip: rect(1px, 1px, 1px, 1px);
+        clip-path: inset(50%);
+        height: 1px; width: 1px;
+        overflow: hidden;
+        white-space: nowrap;
+    }
+
+    /* Skeleton shimmer (loading state) */
+    .skeleton {
+        position: relative;
+        overflow: hidden;
+        background: var(--color-surface-muted);
+        border-radius: var(--radius-xs);
+    }
+    .skeleton::after {
+        content: '';
+        position: absolute; inset: 0;
+        transform: translateX(-100%);
+        background: linear-gradient(
+            90deg,
+            transparent 0%,
+            rgba(255, 255, 255, 0.06) 50%,
+            transparent 100%
+        );
+        animation: skeleton-shimmer 1.4s infinite;
+    }
+    @keyframes skeleton-shimmer {
+        100% { transform: translateX(100%); }
+    }
+
+    /* Custom scrollbar — keeps storefront cohesive on dark surfaces */
+    ::-webkit-scrollbar { width: 10px; height: 10px; }
+    ::-webkit-scrollbar-track { background: var(--color-surface-strong); }
+    ::-webkit-scrollbar-thumb {
+        background: var(--color-surface-muted);
+        border-radius: var(--radius-xs);
+    }
+    ::-webkit-scrollbar-thumb:hover { background: var(--color-text-tertiary); }
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+   Utilities — token-aware helpers.
+   ────────────────────────────────────────────────────────────────────────── */
+@layer utilities {
+    .text-token-price {
+        color: var(--color-text-tertiary);
+        font-weight: 700;
+        font-size: var(--font-size-3xl);
+    }
+    .border-token-input {
+        border: 1px solid var(--color-text-inverse);
+    }
 }
