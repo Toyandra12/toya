@@ -1,0 +1,14 @@
+# ── Telegram bot framework ────────────────────────────────────────────────────
+python-telegram-bot==21.5
+
+# ── Browser automation ────────────────────────────────────────────────────────
+selenium==4.22.0
+webdriver-manager==4.0.1      # auto-downloads matching chromedriver if needed
+
+# ── HTTP / networking (used by selenium internals) ────────────────────────────
+urllib3==2.2.2
+certifi>=2024.2.2
+
+# ── Async support ─────────────────────────────────────────────────────────────
+httpx==0.27.0                 # used by python-telegram-bot v21+
+anyio==4.4.0
