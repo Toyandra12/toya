@@ -1,0 +1,363 @@
+// CineNova schema -- PostgreSQL via Prisma
+// Run: npx prisma migrate dev --name init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------- ENUMS ----------------
+
+enum UserRole {
+  USER
+  ADMIN
+  SUPERADMIN
+}
+
+enum UserStatus {
+  ACTIVE
+  BLOCKED
+}
+
+enum ProductKind {
+  GAME_TOPUP
+  SMM_SERVICE
+  SUBSCRIPTION
+  DIGITAL
+}
+
+enum OrderStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+  REFUNDED
+  CANCELLED
+}
+
+enum PaymentStatus {
+  UNPAID
+  PAID
+  REFUNDED
+  FAILED
+}
+
+enum PaymentMethod {
+  ESEWA
+  KHALTI
+  QR_MANUAL
+  WALLET
+  STRIPE
+  PAYPAL
+}
+
+enum SmmOrderStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  PARTIAL
+  CANCELED
+  FAILED
+}
+
+enum GameCode {
+  FREE_FIRE
+  PUBG
+  MOBILE_LEGENDS
+  VALORANT
+}
+
+// ---------------- USERS ----------------
+
+model User {
+  id            String     @id @default(cuid())
+  email         String     @unique
+  phone         String?    @unique
+  name          String
+  passwordHash  String
+  role          UserRole   @default(USER)
+  status        UserStatus @default(ACTIVE)
+  walletBalance Decimal    @default(0) @db.Decimal(14, 2)
+  totalSpent    Decimal    @default(0) @db.Decimal(14, 2)
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+
+  orders        Order[]
+  walletTxns    WalletTransaction[]
+  activityLogs  ActivityLog[]
+
+  @@index([role])
+  @@index([status])
+}
+
+model WalletTransaction {
+  id        String   @id @default(cuid())
+  userId    String
+  amount    Decimal  @db.Decimal(14, 2)
+  reason    String
+  meta      Json?
+  createdAt DateTime @default(now())
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, createdAt])
+}
+
+// ---------------- CATALOG ----------------
+
+model Category {
+  id        String      @id @default(cuid())
+  slug      String      @unique
+  name      String
+  iconUrl   String?
+  kind      ProductKind
+  position  Int         @default(0)
+  isActive  Boolean     @default(true)
+  products  Product[]
+  createdAt DateTime    @default(now())
+}
+
+model Product {
+  id            String      @id @default(cuid())
+  categoryId    String
+  kind          ProductKind
+  sku           String      @unique
+  name          String
+  description   String?
+  imageUrl      String?
+  // pricing
+  costPrice     Decimal     @db.Decimal(14, 2) // what we pay vendor
+  sellPrice     Decimal     @db.Decimal(14, 2) // what user pays
+  currency      String      @default("NPR")
+  isActive      Boolean     @default(true)
+  // game-topup specific
+  gameCode      GameCode?
+  topupAmount   String?     // e.g. "100 Diamonds"
+  // smm specific
+  smmServiceId  String?     @unique // FK to SmmService.id when product is mapped to SMM
+  // metadata
+  meta          Json?
+  createdAt     DateTime    @default(now())
+  updatedAt     DateTime    @updatedAt
+
+  category      Category    @relation(fields: [categoryId], references: [id])
+  smmService    SmmService? @relation(fields: [smmServiceId], references: [id])
+  orders        Order[]
+
+  @@index([kind, isActive])
+  @@index([gameCode])
+}
+
+// ---------------- ORDERS ----------------
+
+model Order {
+  id            String        @id @default(cuid())
+  orderNo       String        @unique
+  userId        String
+  productId     String
+  quantity      Int           @default(1)
+  unitCost      Decimal       @db.Decimal(14, 2)
+  unitSell      Decimal       @db.Decimal(14, 2)
+  totalCost     Decimal       @db.Decimal(14, 2)
+  totalSell     Decimal       @db.Decimal(14, 2)
+  profit        Decimal       @db.Decimal(14, 2) // totalSell - totalCost (negative on refund)
+  currency      String        @default("NPR")
+
+  status        OrderStatus   @default(PENDING)
+  paymentStatus PaymentStatus @default(UNPAID)
+  paymentMethod PaymentMethod?
+
+  // game-topup metadata
+  gameUid       String?
+  gameZoneId    String?
+  gameUsername  String?
+
+  // smm metadata
+  smmOrderId    String?       @unique
+  smmTarget     String?       // url or username
+
+  notes         String?
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+
+  user          User          @relation(fields: [userId], references: [id])
+  product       Product       @relation(fields: [productId], references: [id])
+  smmOrder      SmmOrder?     @relation(fields: [smmOrderId], references: [id])
+  payment       Payment?
+  uidRecord     UidRecord?
+  revenueLog    RevenueLog?
+
+  @@index([userId, createdAt])
+  @@index([status])
+  @@index([paymentStatus])
+}
+
+model Payment {
+  id            String        @id @default(cuid())
+  orderId       String        @unique
+  method        PaymentMethod
+  amount        Decimal       @db.Decimal(14, 2)
+  reference     String?       // gateway txn id
+  proofUrl      String?       // for QR_MANUAL uploads
+  status        PaymentStatus @default(UNPAID)
+  paidAt        DateTime?
+  createdAt     DateTime      @default(now())
+
+  order         Order         @relation(fields: [orderId], references: [id], onDelete: Cascade)
+}
+
+model UidRecord {
+  id          String    @id @default(cuid())
+  orderId     String    @unique
+  gameCode    GameCode
+  uid         String
+  zoneId      String?
+  username    String?   // resolved nickname if vendor lookup succeeded
+  validatedAt DateTime?
+  createdAt   DateTime  @default(now())
+
+  order       Order     @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([gameCode, uid])
+}
+
+// ---------------- SMM ENGINE ----------------
+
+model SmmProvider {
+  id          String   @id @default(cuid())
+  name        String
+  apiUrl      String   // base url of SMM panel API
+  apiKey      String
+  isActive    Boolean  @default(true)
+  // optional: balance/last-sync metadata
+  balance     Decimal? @db.Decimal(14, 2)
+  lastSyncAt  DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  services    SmmService[]
+  orders      SmmOrder[]
+  apiLogs     SmmApiLog[]
+}
+
+model SmmService {
+  id              String      @id @default(cuid())
+  providerId      String
+  vendorServiceId String      // id from vendor (e.g. "1234")
+  name            String
+  category        String?
+  // pricing per 1000 (industry norm), stored as decimal
+  vendorRate      Decimal     @db.Decimal(14, 4) // per 1000 (cost)
+  sellRate        Decimal     @db.Decimal(14, 4) // per 1000 (price to user)
+  minQty          Int         @default(1)
+  maxQty          Int         @default(1000000)
+  type            String?     // "Default", "Custom Comments", etc.
+  refill          Boolean     @default(false)
+  cancel          Boolean     @default(false)
+  isActive        Boolean     @default(true)
+  rawMeta         Json?       // original response from vendor
+
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  provider        SmmProvider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  product         Product?
+  orders          SmmOrder[]
+
+  @@unique([providerId, vendorServiceId])
+  @@index([isActive])
+}
+
+model SmmOrder {
+  id               String         @id @default(cuid())
+  providerId       String
+  serviceId        String
+  // local order linkage
+  localOrderId     String?        @unique
+  // vendor side
+  vendorOrderId    String?
+  link             String
+  quantity         Int
+  charge           Decimal?       @db.Decimal(14, 4)
+  startCount       Int?
+  remains          Int?
+  status           SmmOrderStatus @default(PENDING)
+  lastSyncedAt     DateTime?
+  errorMessage     String?
+  retries          Int            @default(0)
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  provider         SmmProvider    @relation(fields: [providerId], references: [id])
+  service          SmmService     @relation(fields: [serviceId], references: [id])
+  order            Order?
+
+  @@index([status])
+  @@index([providerId, createdAt])
+}
+
+model SmmApiLog {
+  id          String   @id @default(cuid())
+  providerId  String
+  action      String   // services | add | status | refill | balance
+  request     Json
+  response    Json?
+  statusCode  Int?
+  durationMs  Int?
+  ok          Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  provider    SmmProvider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+
+  @@index([providerId, createdAt])
+  @@index([ok])
+}
+
+// ---------------- FINANCE ----------------
+
+model RevenueLog {
+  id           String   @id @default(cuid())
+  orderId      String   @unique
+  userId       String
+  productKind  ProductKind
+  cost         Decimal  @db.Decimal(14, 2)
+  sell         Decimal  @db.Decimal(14, 2)
+  profit       Decimal  @db.Decimal(14, 2)
+  currency     String   @default("NPR")
+  occurredAt   DateTime @default(now())
+
+  order        Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([userId, occurredAt])
+  @@index([productKind, occurredAt])
+  @@index([occurredAt])
+}
+
+// ---------------- ADMIN / OPS ----------------
+
+model ActivityLog {
+  id         String   @id @default(cuid())
+  actorId    String?
+  actorRole  UserRole?
+  action     String   // e.g. "smm.provider.create", "user.block"
+  target     String?  // entity ref
+  meta       Json?
+  ip         String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+
+  actor      User?    @relation(fields: [actorId], references: [id])
+
+  @@index([actorId, createdAt])
+  @@index([action, createdAt])
+}
+
+model AppSetting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
+}
