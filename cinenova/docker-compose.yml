@@ -1,0 +1,60 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: cinenova-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: cinenova
+      POSTGRES_PASSWORD: cinenova
+      POSTGRES_DB: cinenova
+    ports:
+      - "5433:5432"
+    volumes:
+      - cinenova_db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cinenova -d cinenova"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  app:
+    image: node:20-alpine
+    container_name: cinenova-app
+    working_dir: /app
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: "postgresql://cinenova:cinenova@db:5432/cinenova?schema=public"
+      JWT_SECRET: "dev-secret-change-me-please-this-is-only-for-local-use-12345"
+      JWT_EXPIRES_IN: "7d"
+      NEXT_PUBLIC_APP_NAME: "CineNova"
+      NEXT_PUBLIC_APP_URL: "http://localhost:3000"
+      NEXT_PUBLIC_CURRENCY: "NPR"
+      SEED_ADMIN_EMAIL: "admin@cinenova.local"
+      SEED_ADMIN_PASSWORD: "ChangeMe123!"
+      HOSTNAME: "0.0.0.0"
+    ports:
+      - "3000:3000"
+    volumes:
+      - .:/app
+      - cinenova_node_modules:/app/node_modules
+      - cinenova_next:/app/.next
+    command: >
+      sh -c "
+        echo '==> Installing dependencies (first run can take ~2 min)' &&
+        npm install --no-audit --no-fund &&
+        echo '==> Generating Prisma client' &&
+        npx prisma generate &&
+        echo '==> Applying migrations' &&
+        npx prisma migrate deploy 2>/dev/null || npx prisma migrate dev --name init --skip-seed &&
+        echo '==> Seeding admin + sample products' &&
+        npx prisma db seed || true &&
+        echo '==> Starting Next.js on http://localhost:3000' &&
+        npm run dev -- -H 0.0.0.0
+      "
+
+volumes:
+  cinenova_db:
+  cinenova_node_modules:
+  cinenova_next:
