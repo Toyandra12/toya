@@ -1,0 +1,130 @@
+version: "3.8"
+
+# =============================================================================
+# AI Video Channel - n8n self-hosted stack
+# Run with: docker compose up -d
+# =============================================================================
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DB_POSTGRESDB_USER:-n8n}
+      POSTGRES_PASSWORD: ${DB_POSTGRESDB_PASSWORD}
+      POSTGRES_DB: ${DB_POSTGRESDB_DATABASE:-n8n}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - n8n_net
+
+  n8n:
+    # Use the official image; if you need extra system tools (ffmpeg, etc.) 
+    # build from ./docker/Dockerfile instead by uncommenting `build:` below.
+    image: n8nio/n8n:latest
+    # build:
+    #   context: ./docker
+    #   dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "5678:5678"
+    environment:
+      # Core
+      GENERIC_TIMEZONE: ${GENERIC_TIMEZONE:-UTC}
+      TZ: ${TZ:-UTC}
+      N8N_HOST: ${N8N_HOST:-localhost}
+      N8N_PORT: 5678
+      N8N_PROTOCOL: ${N8N_PROTOCOL:-http}
+      WEBHOOK_URL: ${WEBHOOK_URL:-http://localhost:5678/}
+      N8N_EDITOR_BASE_URL: ${N8N_EDITOR_BASE_URL:-http://localhost:5678/}
+      N8N_BASIC_AUTH_ACTIVE: ${N8N_BASIC_AUTH_ACTIVE:-true}
+      N8N_BASIC_AUTH_USER: ${N8N_BASIC_AUTH_USER}
+      N8N_BASIC_AUTH_PASSWORD: ${N8N_BASIC_AUTH_PASSWORD}
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
+      N8N_RUNNERS_ENABLED: "true"
+      N8N_PERSONALIZATION_ENABLED: "false"
+      N8N_DIAGNOSTICS_ENABLED: "false"
+      N8N_VERSION_NOTIFICATIONS_ENABLED: "false"
+
+      # Executions tuning - long Veo polls
+      EXECUTIONS_MODE: ${EXECUTIONS_MODE:-regular}
+      EXECUTIONS_PROCESS: ${EXECUTIONS_PROCESS:-main}
+      EXECUTIONS_TIMEOUT: ${EXECUTIONS_TIMEOUT:-3600}
+      EXECUTIONS_TIMEOUT_MAX: ${EXECUTIONS_TIMEOUT_MAX:-7200}
+      EXECUTIONS_DATA_PRUNE: ${EXECUTIONS_DATA_PRUNE:-true}
+      EXECUTIONS_DATA_MAX_AGE: ${EXECUTIONS_DATA_MAX_AGE:-336}
+
+      # Database
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: postgres
+      DB_POSTGRESDB_PORT: 5432
+      DB_POSTGRESDB_DATABASE: ${DB_POSTGRESDB_DATABASE:-n8n}
+      DB_POSTGRESDB_USER: ${DB_POSTGRESDB_USER:-n8n}
+      DB_POSTGRESDB_PASSWORD: ${DB_POSTGRESDB_PASSWORD}
+
+      # Pass through pipeline variables to expressions via $env.*
+      CRON_SCHEDULE: ${CRON_SCHEDULE}
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      GEMINI_TEXT_MODEL: ${GEMINI_TEXT_MODEL}
+      VERTEX_PROJECT_ID: ${VERTEX_PROJECT_ID}
+      VERTEX_LOCATION: ${VERTEX_LOCATION}
+      VEO_MODEL_ID: ${VEO_MODEL_ID}
+      VERTEX_OUTPUT_BUCKET: ${VERTEX_OUTPUT_BUCKET}
+      VEO_MAX_POLL_ATTEMPTS: ${VEO_MAX_POLL_ATTEMPTS}
+      GOOGLE_APPLICATION_CREDENTIALS: ${GOOGLE_APPLICATION_CREDENTIALS}
+      GOOGLE_SHEETS_DOCUMENT_ID: ${GOOGLE_SHEETS_DOCUMENT_ID}
+      GDRIVE_FOLDER_ID: ${GDRIVE_FOLDER_ID}
+      GDRIVE_DRIVE_ID: ${GDRIVE_DRIVE_ID}
+      YOUTUBE_CHANNEL_ID: ${YOUTUBE_CHANNEL_ID}
+      FB_PAGE_ID: ${FB_PAGE_ID}
+      FB_PAGE_ACCESS_TOKEN: ${FB_PAGE_ACCESS_TOKEN}
+      ERROR_HANDLER_WORKFLOW_ID: ${ERROR_HANDLER_WORKFLOW_ID}
+      MAX_RETRY_ATTEMPTS: ${MAX_RETRY_ATTEMPTS}
+      NOTIFY_WEBHOOK_URL: ${NOTIFY_WEBHOOK_URL}
+      NOTIFY_FROM_EMAIL: ${NOTIFY_FROM_EMAIL}
+      NOTIFY_TO_EMAIL: ${NOTIFY_TO_EMAIL}
+
+    volumes:
+      - n8n_data:/home/node/.n8n
+      # Mount the GCP service-account JSON read-only into the container
+      - ./secrets:/home/node/secrets:ro
+      # Pre-stage workflow JSON files so you can import via UI
+      - ./workflows:/home/node/workflows:ro
+    networks:
+      - n8n_net
+
+  # Optional: Caddy reverse proxy with automatic HTTPS for production
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - n8n
+    networks:
+      - n8n_net
+    profiles:
+      - production
+
+volumes:
+  postgres_data:
+  n8n_data:
+  caddy_data:
+  caddy_config:
+
+networks:
+  n8n_net:
+    driver: bridge
