@@ -1,0 +1,104 @@
+{
+  "name": "AI Video Channel - Dashboard API",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "GET",
+        "path": "ai-video-dashboard",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "trigger-webhook",
+      "name": "Webhook GET /ai-video-dashboard",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [-800, 300],
+      "webhookId": "ai-video-dashboard"
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "read",
+        "documentId": { "__rl": true, "value": "={{ $env.GOOGLE_SHEETS_DOCUMENT_ID }}", "mode": "id" },
+        "sheetName": { "__rl": true, "value": "Videos", "mode": "name" },
+        "options": { "returnFirstMatch": false }
+      },
+      "id": "node-read-videos",
+      "name": "Read Videos",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [-580, 200],
+      "credentials": { "googleApi": { "id": "google-service-account", "name": "Google Service Account" } }
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "read",
+        "documentId": { "__rl": true, "value": "={{ $env.GOOGLE_SHEETS_DOCUMENT_ID }}", "mode": "id" },
+        "sheetName": { "__rl": true, "value": "Logs", "mode": "name" },
+        "options": { "returnFirstMatch": false }
+      },
+      "id": "node-read-logs",
+      "name": "Read Logs",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [-580, 400],
+      "credentials": { "googleApi": { "id": "google-service-account", "name": "Google Service Account" } }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build dashboard stats\nconst videos = $('Read Videos').all().map(i => i.json).filter(v => v && v.run_id);\nconst logs = $('Read Logs').all().map(i => i.json).filter(l => l && l.timestamp);\nconst now = new Date();\nconst day24h = new Date(now.getTime() - 24*3600*1000);\nconst day7d = new Date(now.getTime() - 7*24*3600*1000);\n\nconst published = videos.filter(v => v.final_status === 'published');\nconst failed = videos.filter(v => v.final_status === 'partial_failure' || v.final_status === 'failed');\nconst last24 = videos.filter(v => new Date(v.completed_at) > day24h);\nconst last7 = videos.filter(v => new Date(v.completed_at) > day7d);\n\nconst errors = logs.filter(l => l.level === 'ERROR');\nconst errors24 = errors.filter(l => new Date(l.timestamp) > day24h);\n\n// Upcoming = videos completed in last 30 min that may still be in scheduled state\nconst upcoming = videos.slice(-10).filter(v => v.yt_status === 'scheduled' || v.fb_status === 'scheduled');\n\nconst stats = {\n  generated_total: videos.length,\n  published_total: published.length,\n  failed_total: failed.length,\n  generated_last_24h: last24.length,\n  generated_last_7d: last7.length,\n  errors_total: errors.length,\n  errors_last_24h: errors24.length,\n  upcoming_scheduled: upcoming.length,\n  last_run: videos[videos.length - 1] || null,\n  recent_videos: videos.slice(-15).reverse().map(v => ({\n    run_id: v.run_id,\n    completed_at: v.completed_at,\n    title: v.idea_title,\n    yt_url: v.youtube_url,\n    fb_url: v.facebook_url,\n    drive_url: v.drive_url,\n    status: v.final_status\n  })),\n  recent_errors: errors.slice(-10).reverse().map(e => ({\n    timestamp: e.timestamp,\n    run_id: e.run_id,\n    stage: e.stage,\n    message: e.message\n  })),\n  total_views: 0,\n  generated_at: now.toISOString()\n};\nreturn [{ json: stats }];"
+      },
+      "id": "node-stats",
+      "name": "Build Stats",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-360, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Render HTML dashboard\nconst s = $input.first().json;\nconst tableRows = s.recent_videos.map(v => `\n  <tr>\n    <td>${v.completed_at || ''}</td>\n    <td>${v.title || ''}</td>\n    <td><span class=\"pill ${v.status}\">${v.status || ''}</span></td>\n    <td>${v.yt_url ? `<a href='${v.yt_url}' target='_blank'>YT</a>` : '-'}</td>\n    <td>${v.fb_url ? `<a href='${v.fb_url}' target='_blank'>FB</a>` : '-'}</td>\n    <td>${v.drive_url ? `<a href='${v.drive_url}' target='_blank'>Drive</a>` : '-'}</td>\n  </tr>\n`).join('');\nconst errorRows = s.recent_errors.map(e => `\n  <tr>\n    <td>${e.timestamp}</td>\n    <td>${e.run_id}</td>\n    <td>${e.stage}</td>\n    <td>${(e.message || '').slice(0, 150)}</td>\n  </tr>\n`).join('');\nconst html = `<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\"/>\n<title>AI Video Channel Dashboard</title>\n<meta http-equiv=\"refresh\" content=\"60\"/>\n<style>\n  body { font-family: -apple-system, system-ui, Segoe UI, Roboto, sans-serif; background: #0e1116; color: #e6edf3; margin: 0; padding: 24px; }\n  h1 { margin: 0 0 8px; font-weight: 600; }\n  .sub { color:#8b949e; margin-bottom: 24px; font-size: 13px; }\n  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 28px; }\n  .card { background:#161b22; border:1px solid #30363d; border-radius:10px; padding:16px; }\n  .card .label { color:#8b949e; font-size:12px; text-transform:uppercase; letter-spacing:.5px; }\n  .card .value { font-size:30px; font-weight:600; margin-top:6px; }\n  table { width:100%; border-collapse:collapse; background:#161b22; border:1px solid #30363d; border-radius:10px; overflow:hidden; }\n  th, td { padding:10px 12px; text-align:left; border-bottom:1px solid #21262d; font-size:13px; }\n  th { background:#0d1117; color:#8b949e; font-weight:500; text-transform:uppercase; font-size:11px; }\n  a { color:#58a6ff; text-decoration:none; }\n  .pill { padding:2px 8px; border-radius:12px; font-size:11px; font-weight:500; }\n  .pill.published { background:#1f6f3a; color:#aff5c4; }\n  .pill.partial_failure { background:#7a3a1c; color:#ffd6b3; }\n  .pill.failed { background:#7d1f23; color:#ffb3b8; }\n  h2 { margin-top: 32px; font-size:18px; }\n</style>\n</head>\n<body>\n  <h1>AI Video Channel</h1>\n  <div class=\"sub\">Auto-refreshing dashboard - last updated ${s.generated_at}</div>\n  <div class=\"grid\">\n    <div class=\"card\"><div class=\"label\">Videos Generated</div><div class=\"value\">${s.generated_total}</div></div>\n    <div class=\"card\"><div class=\"label\">Published</div><div class=\"value\">${s.published_total}</div></div>\n    <div class=\"card\"><div class=\"label\">Failed</div><div class=\"value\">${s.failed_total}</div></div>\n    <div class=\"card\"><div class=\"label\">Last 24h</div><div class=\"value\">${s.generated_last_24h}</div></div>\n    <div class=\"card\"><div class=\"label\">Last 7 days</div><div class=\"value\">${s.generated_last_7d}</div></div>\n    <div class=\"card\"><div class=\"label\">Upcoming Scheduled</div><div class=\"value\">${s.upcoming_scheduled}</div></div>\n    <div class=\"card\"><div class=\"label\">Errors (24h)</div><div class=\"value\">${s.errors_last_24h}</div></div>\n    <div class=\"card\"><div class=\"label\">Total Views</div><div class=\"value\">${s.total_views}*</div></div>\n  </div>\n  <h2>Recent Videos</h2>\n  <table>\n    <thead><tr><th>Completed</th><th>Title</th><th>Status</th><th>YT</th><th>FB</th><th>Drive</th></tr></thead>\n    <tbody>${tableRows}</tbody>\n  </table>\n  <h2>Recent Errors</h2>\n  <table>\n    <thead><tr><th>Time</th><th>Run</th><th>Stage</th><th>Message</th></tr></thead>\n    <tbody>${errorRows}</tbody>\n  </table>\n  <p style=\"color:#8b949e;font-size:12px;margin-top:24px\">* Total views requires YouTube + Facebook analytics integration (see future-integration TODO).</p>\n</body>\n</html>`;\nreturn [{ json: { html } }];"
+      },
+      "id": "node-render-html",
+      "name": "Render HTML",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-140, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ $json.html }}",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              { "name": "Content-Type", "value": "text/html; charset=utf-8" },
+              { "name": "Cache-Control", "value": "no-cache" }
+            ]
+          }
+        }
+      },
+      "id": "node-respond",
+      "name": "Respond HTML",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [80, 300]
+    }
+  ],
+  "connections": {
+    "Webhook GET /ai-video-dashboard": {
+      "main": [[
+        { "node": "Read Videos", "type": "main", "index": 0 },
+        { "node": "Read Logs", "type": "main", "index": 0 }
+      ]]
+    },
+    "Read Videos": { "main": [[{ "node": "Build Stats", "type": "main", "index": 0 }]] },
+    "Read Logs": { "main": [[{ "node": "Build Stats", "type": "main", "index": 0 }]] },
+    "Build Stats": { "main": [[{ "node": "Render HTML", "type": "main", "index": 0 }]] },
+    "Render HTML": { "main": [[{ "node": "Respond HTML", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1" },
+  "tags": [{ "name": "ai-video-channel" }, { "name": "dashboard" }],
+  "active": false,
+  "versionId": "1.0.0"
+}

@@ -1,0 +1,778 @@
+{
+  "name": "AI Video Channel - Main Pipeline",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "={{ $env.CRON_SCHEDULE || '0 8,13,19 * * *' }}"
+            }
+          ]
+        }
+      },
+      "id": "trigger-schedule",
+      "name": "Schedule Trigger (8AM/1PM/7PM)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [-1600, 400],
+      "notes": "Editable cron via CRON_SCHEDULE env var. Default 0 8,13,19 * * * runs daily at 08:00, 13:00, 19:00."
+    },
+    {
+      "parameters": {
+        "jsCode": "// =============================================\n// CHARACTER MEMORY - Central character store\n// All prompts will reference these definitions\n// to ensure visual consistency across videos.\n// =============================================\nconst characters = {\n  main: {\n    name: 'Leo',\n    age: 3,\n    role: 'toddler protagonist',\n    appearance: {\n      hair: 'soft blonde hair, lightly tousled, slightly curly at the tips',\n      eyes: 'bright sky-blue eyes, large and expressive',\n      face: 'round chubby cheeks, fair skin with a light pink blush, small button nose, tiny rosy lips',\n      build: 'small toddler stature, about 95cm tall, soft baby-fat proportions',\n      outfit: 'pastel blue cotton t-shirt, beige overall shorts, white sneakers with velcro straps',\n      personality: 'curious, playful, kind, gentle laugh'\n    },\n    voice: 'soft toddler voice, light giggles, simple short sentences'\n  },\n  mother: {\n    name: 'Mom (Sarah)',\n    appearance: 'warm-eyed woman in late 20s, long wavy chestnut-brown hair tied loosely, soft smile, light freckles, wearing a cream knit cardigan over a white tee and light denim jeans',\n    voice: 'gentle, warm, calm tone'\n  },\n  father: {\n    name: 'Dad (Daniel)',\n    appearance: 'friendly man in early 30s, short dark-brown hair, light stubble, kind hazel eyes, navy henley shirt, dark grey chinos, casual brown sneakers',\n    voice: 'warm, deep, playful'\n  },\n  dog: {\n    name: 'Max',\n    breed: 'Golden Retriever',\n    appearance: 'large fluffy golden coat, friendly soft brown eyes, pink tongue, red collar with a small bone-shaped tag, wagging tail, gentle and protective',\n    voice: 'soft barks, happy panting'\n  }\n};\n\n// Niches the channel rotates through\nconst niches = [\n  'toddler stories',\n  'family stories',\n  'funny situations',\n  'emotional stories',\n  'animal friendships',\n  'school life',\n  'road trips',\n  'market adventures'\n];\n\n// Pick a niche pseudo-randomly weighted by hour-of-day\nconst hour = new Date().getHours();\nconst niche = niches[(hour + Math.floor(Math.random() * niches.length)) % niches.length];\n\nreturn [{\n  json: {\n    characters,\n    niches,\n    selectedNiche: niche,\n    runId: `run_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,\n    runTimestamp: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "node-character-memory",
+      "name": "Load Character Memory",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-1380, 400]
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "read",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.GOOGLE_SHEETS_DOCUMENT_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Ideas",
+          "mode": "name"
+        },
+        "options": {
+          "returnFirstMatch": false
+        }
+      },
+      "id": "node-read-existing-ideas",
+      "name": "Read Existing Ideas (Dedup)",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [-1160, 400],
+      "credentials": {
+        "googleApi": {
+          "id": "google-service-account",
+          "name": "Google Service Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Aggregate previous idea titles for de-duplication\nconst memory = $('Load Character Memory').first().json;\nconst rows = $input.all().map(i => i.json).filter(r => r && r.title);\nconst existingTitles = rows.map(r => String(r.title).toLowerCase().trim());\n\nreturn [{\n  json: {\n    ...memory,\n    existingTitles,\n    existingIdeasCount: existingTitles.length\n  }\n}];"
+      },
+      "id": "node-prepare-dedup",
+      "name": "Prepare Dedup Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-940, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://generativelanguage.googleapis.com/v1beta/models/{{ $env.GEMINI_TEXT_MODEL || 'gemini-2.0-flash' }}:generateContent?key={{ $env.GEMINI_API_KEY }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"contents\": [{\n    \"role\": \"user\",\n    \"parts\": [{\n      \"text\": \"You are a viral short-form video idea generator for a wholesome family AI-video channel. Generate ONE unique, fresh, viral 30-60 second video idea in the niche: '{{ $json.selectedNiche }}'.\\n\\nMain recurring characters (must appear in most videos):\\n- Leo: 3-year-old toddler boy, soft blonde hair, bright blue eyes, round chubby cheeks, curious and playful.\\n- Mom (Sarah) and Dad (Daniel): warm, supportive parents.\\n- Max: friendly Golden Retriever family dog.\\n\\nAVOID these already-used ideas (do NOT repeat themes/titles):\\n{{ JSON.stringify($json.existingTitles) }}\\n\\nReturn STRICT JSON only (no markdown, no commentary):\\n{\\n  \\\"title\\\": \\\"5-9 word hook title, no clickbait, family friendly\\\",\\n  \\\"logline\\\": \\\"1 sentence summary of the story\\\",\\n  \\\"hook\\\": \\\"the first 2 seconds visual hook to stop scrollers\\\",\\n  \\\"story_beats\\\": [\\\"beat 1\\\", \\\"beat 2\\\", \\\"beat 3\\\", \\\"beat 4\\\"],\\n  \\\"setting\\\": \\\"location and time of day\\\",\\n  \\\"emotion\\\": \\\"primary emotional payoff\\\",\\n  \\\"niche\\\": \\\"{{ $json.selectedNiche }}\\\"\\n}\"\n    }]\n  }],\n  \"generationConfig\": {\n    \"temperature\": 1.1,\n    \"topP\": 0.95,\n    \"maxOutputTokens\": 800,\n    \"responseMimeType\": \"application/json\"\n  }\n}",
+        "options": {
+          "timeout": 60000,
+          "response": { "response": { "fullResponse": false } }
+        }
+      },
+      "id": "node-gemini-idea",
+      "name": "Gemini: Generate Idea",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-720, 400],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Parse Gemini idea response and check for duplicates\nconst raw = $input.first().json;\nconst memory = $('Prepare Dedup Context').first().json;\n\nlet ideaText = '';\ntry {\n  ideaText = raw.candidates[0].content.parts[0].text;\n} catch (e) {\n  throw new Error('Gemini returned no candidates: ' + JSON.stringify(raw).slice(0, 500));\n}\n\nlet idea;\ntry {\n  idea = JSON.parse(ideaText);\n} catch (e) {\n  // Try to extract JSON block\n  const m = ideaText.match(/\\{[\\s\\S]*\\}/);\n  if (!m) throw new Error('Could not parse idea JSON: ' + ideaText.slice(0, 300));\n  idea = JSON.parse(m[0]);\n}\n\nconst lowerTitle = String(idea.title || '').toLowerCase().trim();\nconst isDuplicate = memory.existingTitles.some(t =>\n  t === lowerTitle || (t.length > 8 && lowerTitle.includes(t)) || (lowerTitle.length > 8 && t.includes(lowerTitle))\n);\n\nif (isDuplicate) {\n  throw new Error(`Duplicate idea detected: \"${idea.title}\". Aborting this run.`);\n}\n\nreturn [{\n  json: {\n    ...memory,\n    idea,\n    ideaTitle: idea.title,\n    ideaLogline: idea.logline,\n    ideaHook: idea.hook,\n    ideaBeats: idea.story_beats,\n    ideaSetting: idea.setting,\n    ideaEmotion: idea.emotion\n  }\n}];"
+      },
+      "id": "node-parse-idea",
+      "name": "Parse + Dedup Check",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-500, 400]
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $env.GOOGLE_SHEETS_DOCUMENT_ID }}",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "Ideas",
+          "mode": "name"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "run_id": "={{ $json.runId }}",
+            "timestamp": "={{ $json.runTimestamp }}",
+            "niche": "={{ $json.selectedNiche }}",
+            "title": "={{ $json.ideaTitle }}",
+            "logline": "={{ $json.ideaLogline }}",
+            "hook": "={{ $json.ideaHook }}",
+            "beats": "={{ JSON.stringify($json.ideaBeats) }}",
+            "status": "idea_created"
+          }
+        }
+      },
+      "id": "node-save-idea",
+      "name": "Save Idea to Sheets",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [-280, 400],
+      "credentials": {
+        "googleApi": {
+          "id": "google-service-account",
+          "name": "Google Service Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://generativelanguage.googleapis.com/v1beta/models/{{ $env.GEMINI_TEXT_MODEL || 'gemini-2.0-flash' }}:generateContent?key={{ $env.GEMINI_API_KEY }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"contents\": [{\n    \"role\": \"user\",\n    \"parts\": [{\n      \"text\": \"You are a senior cinematographer writing a Veo 3 video prompt. Convert the idea into a single, dense, cinematic prompt string optimized for Google Veo.\\n\\nIDEA: {{ JSON.stringify($json.idea) }}\\n\\nLOCKED CHARACTER DEFINITIONS (must be described identically in EVERY prompt to maintain visual consistency):\\n{{ JSON.stringify($json.characters) }}\\n\\nThe prompt MUST include, in this order, woven into natural prose:\\n1. CHARACTER DETAILS - exact appearance from the locked definitions above (hair, eyes, face, outfit) for every character that appears.\\n2. ENVIRONMENT - rich location, props, weather, time of day.\\n3. CAMERA MOVEMENT - specify shots like 'slow dolly-in', 'handheld follow', 'low-angle tracking', 'overhead crane', 'cinematic push-in'.\\n4. LIGHTING - golden hour, soft window light, warm practicals, etc.\\n5. EMOTIONS - facial expressions and emotional beats.\\n6. ACTIONS - clear physical action verbs frame by frame.\\n7. VISUAL STYLE - 'photorealistic, ultra-detailed, cinematic, shallow depth of field, 35mm film grain, 4K resolution'.\\n8. AUDIO CUES - natural ambient audio: footsteps, laughter, dog panting, birds, distant traffic, light wind. NO music description.\\n\\nReturn STRICT JSON only:\\n{\\n  \\\"veo_prompt\\\": \\\"the full cinematic prompt as one paragraph, 120-220 words\\\",\\n  \\\"negative_prompt\\\": \\\"blurry, distorted faces, extra fingers, watermark, text overlay, deformed, low quality\\\",\\n  \\\"aspect_ratio\\\": \\\"9:16\\\",\\n  \\\"duration_seconds\\\": 8\\n}\"\n    }]\n  }],\n  \"generationConfig\": {\n    \"temperature\": 0.85,\n    \"maxOutputTokens\": 1500,\n    \"responseMimeType\": \"application/json\"\n  }\n}",
+        "options": { "timeout": 60000 }
+      },
+      "id": "node-gemini-prompt",
+      "name": "Gemini: Build Veo Prompt",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [-60, 400],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $input.first().json;\nconst prev = $('Parse + Dedup Check').first().json;\nlet text = '';\ntry { text = raw.candidates[0].content.parts[0].text; } catch (e) { throw new Error('Gemini prompt response invalid: ' + JSON.stringify(raw).slice(0, 400)); }\nlet promptObj;\ntry { promptObj = JSON.parse(text); } catch (e) {\n  const m = text.match(/\\{[\\s\\S]*\\}/); if (!m) throw new Error('Bad prompt JSON');\n  promptObj = JSON.parse(m[0]);\n}\nreturn [{ json: { ...prev, veoPrompt: promptObj.veo_prompt, negativePrompt: promptObj.negative_prompt, aspectRatio: promptObj.aspect_ratio || '9:16', durationSeconds: promptObj.duration_seconds || 8 } }];"
+      },
+      "id": "node-parse-prompt",
+      "name": "Parse Veo Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [160, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://{{ $env.VERTEX_LOCATION || 'us-central1' }}-aiplatform.googleapis.com/v1/projects/{{ $env.VERTEX_PROJECT_ID }}/locations/{{ $env.VERTEX_LOCATION || 'us-central1' }}/publishers/google/models/{{ $env.VEO_MODEL_ID || 'veo-3.0-generate-preview' }}:predictLongRunning",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"instances\": [{\n    \"prompt\": \"{{ $json.veoPrompt.replace(/\"/g, '\\\\\"') }}\",\n    \"negativePrompt\": \"{{ $json.negativePrompt }}\"\n  }],\n  \"parameters\": {\n    \"aspectRatio\": \"{{ $json.aspectRatio }}\",\n    \"durationSeconds\": {{ $json.durationSeconds }},\n    \"sampleCount\": 1,\n    \"personGeneration\": \"allow_adult\",\n    \"resolution\": \"1080p\",\n    \"generateAudio\": true,\n    \"storageUri\": \"gs://{{ $env.VERTEX_OUTPUT_BUCKET }}/{{ $json.runId }}/\"\n  }\n}",
+        "options": { "timeout": 120000 }
+      },
+      "id": "node-veo-submit",
+      "name": "Vertex AI Veo: Submit Job",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [380, 400],
+      "credentials": {
+        "googleApi": {
+          "id": "google-service-account",
+          "name": "Google Service Account"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 8000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "const submit = $input.first().json;\nconst prev = $('Parse Veo Prompt').first().json;\nconst opName = submit.name;\nif (!opName) throw new Error('Veo did not return an operation name. Resp: ' + JSON.stringify(submit).slice(0, 400));\nreturn [{ json: { ...prev, veoOperation: opName, pollAttempt: 0 } }];"
+      },
+      "id": "node-veo-init-poll",
+      "name": "Init Poll State",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [600, 400]
+    },
+    {
+      "parameters": {
+        "amount": 30,
+        "unit": "seconds"
+      },
+      "id": "node-wait-poll",
+      "name": "Wait 30s",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [820, 400]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://{{ $env.VERTEX_LOCATION || 'us-central1' }}-aiplatform.googleapis.com/v1/projects/{{ $env.VERTEX_PROJECT_ID }}/locations/{{ $env.VERTEX_LOCATION || 'us-central1' }}/publishers/google/models/{{ $env.VEO_MODEL_ID || 'veo-3.0-generate-preview' }}:fetchPredictOperation",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"operationName\": \"{{ $json.veoOperation }}\"\n}",
+        "options": { "timeout": 60000 }
+      },
+      "id": "node-veo-poll",
+      "name": "Vertex AI Veo: Poll Status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1040, 400],
+      "credentials": {
+        "googleApi": {
+          "id": "google-service-account",
+          "name": "Google Service Account"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 5,
+      "waitBetweenTries": 10000
+    },
+    {
+      "parameters": {
+        "jsCode": "const r = $input.first().json;\nconst prev = $('Init Poll State').first().json;\nconst attempt = (prev.pollAttempt || 0) + 1;\nconst maxAttempts = parseInt($env.VEO_MAX_POLL_ATTEMPTS || '40');\n\nif (r.done === true) {\n  if (r.error) {\n    throw new Error('Veo failed: ' + JSON.stringify(r.error));\n  }\n  // Success - extract video URI\n  const videos = (r.response && (r.response.videos || (r.response.predictions && r.response.predictions[0] && r.response.predictions[0].videos))) || [];\n  const first = videos[0] || {};\n  const gcsUri = first.gcsUri || first.uri || (r.response && r.response.generatedVideos && r.response.generatedVideos[0] && r.response.generatedVideos[0].video && r.response.generatedVideos[0].video.uri);\n  if (!gcsUri) throw new Error('Veo done but no video URI: ' + JSON.stringify(r).slice(0, 600));\n  return [{ json: { ...prev, pollAttempt: attempt, veoDone: true, gcsUri, videoMime: first.mimeType || 'video/mp4' } }];\n}\n\nif (attempt >= maxAttempts) {\n  throw new Error(`Veo polling timed out after ${attempt} attempts`);\n}\n\nreturn [{ json: { ...prev, pollAttempt: attempt, veoDone: false } }];"
+      },
+      "id": "node-poll-eval",
+      "name": "Evaluate Poll",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1260, 400]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "typeValidation": "strict" },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.veoDone }}",
+              "rightValue": true,
+              "operator": { "type": "boolean", "operation": "true" }
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "node-poll-if",
+      "name": "Veo Done?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [1480, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Convert gs:// URI to authenticated download URL\nconst data = $input.first().json;\nconst gcs = data.gcsUri;\nif (!gcs.startsWith('gs://')) throw new Error('Unexpected URI: ' + gcs);\nconst withoutScheme = gcs.replace('gs://', '');\nconst slash = withoutScheme.indexOf('/');\nconst bucket = withoutScheme.slice(0, slash);\nconst objectPath = withoutScheme.slice(slash + 1);\nconst encoded = encodeURIComponent(objectPath);\nconst downloadUrl = `https://storage.googleapis.com/storage/v1/b/${bucket}/o/${encoded}?alt=media`;\nreturn [{ json: { ...data, gcsBucket: bucket, gcsObject: objectPath, downloadUrl } }];"
+      },
+      "id": "node-build-download-url",
+      "name": "Build GCS Download URL",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1700, 300]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "={{ $json.downloadUrl }}",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleApi",
+        "sendHeaders": false,
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file",
+              "outputPropertyName": "data"
+            }
+          },
+          "timeout": 300000
+        }
+      },
+      "id": "node-download-video",
+      "name": "Download Video from GCS",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1920, 300],
+      "credentials": {
+        "googleApi": {
+          "id": "google-service-account",
+          "name": "Google Service Account"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 10000
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://generativelanguage.googleapis.com/v1beta/models/{{ $env.GEMINI_TEXT_MODEL || 'gemini-2.0-flash' }}:generateContent?key={{ $env.GEMINI_API_KEY }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"contents\": [{\n    \"role\": \"user\",\n    \"parts\": [{\n      \"text\": \"You are a social media copywriter for a wholesome family AI-video channel featuring 3-year-old Leo, his parents, and Golden Retriever Max.\\n\\nIDEA: {{ JSON.stringify($('Parse + Dedup Check').first().json.idea) }}\\n\\nGenerate metadata. Rules: human-sounding (no AI tone), family-friendly, no clickbait, no ALL CAPS spam, high engagement. Return STRICT JSON only:\\n{\\n  \\\"yt_title\\\": \\\"YouTube Shorts title, <=60 chars, hooky, natural\\\",\\n  \\\"yt_description\\\": \\\"3-5 short paragraphs, warm tone, ends with subscribe nudge, includes 5 inline hashtags at the end\\\",\\n  \\\"fb_caption\\\": \\\"Facebook Reel caption, 1-3 sentences, emotional hook, ends with 5 hashtags\\\",\\n  \\\"hashtags\\\": [\\\"#Leo\\\", \\\"#FamilyMoments\\\", \\\"... 12-15 viral but relevant tags\\\"]\\n}\"\n    }]\n  }],\n  \"generationConfig\": {\n    \"temperature\": 0.9,\n    \"maxOutputTokens\": 1200,\n    \"responseMimeType\": \"application/json\"\n  }\n}",
+        "options": { "timeout": 60000 }
+      },
+      "id": "node-gemini-meta",
+      "name": "Gemini: Generate Metadata",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [2140, 300],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $input.first().json;\nconst videoBin = $('Download Video from GCS').first();\nconst prev = $('Build GCS Download URL').first().json;\nlet text = ''; try { text = raw.candidates[0].content.parts[0].text; } catch(e){ throw new Error('Meta resp invalid'); }\nlet meta; try { meta = JSON.parse(text); } catch(e){ const m = text.match(/\\{[\\s\\S]*\\}/); meta = JSON.parse(m[0]); }\nconst hashtags = (meta.hashtags || []).map(t => t.startsWith('#') ? t : '#' + t);\nreturn [{ json: { ...prev, ytTitle: meta.yt_title, ytDescription: meta.yt_description, fbCaption: meta.fb_caption, hashtags, hashtagString: hashtags.join(' ') }, binary: videoBin.binary }];"
+      },
+      "id": "node-parse-meta",
+      "name": "Parse Metadata",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2360, 300]
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "upload",
+        "name": "={{ $json.runId }}_{{ $json.ideaTitle.replace(/[^a-zA-Z0-9]/g,'_').slice(0,40) }}.mp4",
+        "driveId": { "__rl": true, "value": "={{ $env.GDRIVE_DRIVE_ID || 'My Drive' }}", "mode": "id" },
+        "folderId": { "__rl": true, "value": "={{ $env.GDRIVE_FOLDER_ID }}", "mode": "id" },
+        "options": {}
+      },
+      "id": "node-drive-upload",
+      "name": "Upload to Google Drive",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [2580, 300],
+      "credentials": {
+        "googleApi": {
+          "id": "google-service-account",
+          "name": "Google Service Account"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 10000
+    },
+    {
+      "parameters": {
+        "jsCode": "const drive = $input.first().json;\nconst prev = $('Parse Metadata').first().json;\nconst videoBin = $('Download Video from GCS').first();\nconst driveUrl = drive.webViewLink || `https://drive.google.com/file/d/${drive.id}/view`;\nreturn [{ json: { ...prev, driveFileId: drive.id, driveUrl }, binary: videoBin.binary }];"
+      },
+      "id": "node-merge-drive",
+      "name": "Merge Drive Info",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2800, 300]
+    },
+    {
+      "parameters": {
+        "resource": "video",
+        "operation": "upload",
+        "title": "={{ $json.ytTitle }}",
+        "regionCode": "US",
+        "categoryId": "24",
+        "options": {
+          "description": "={{ $json.ytDescription }}\n\n{{ $json.hashtagString }}",
+          "privacyStatus": "private",
+          "publishAt": "={{ $now.plus({minutes: 15}).toISO() }}",
+          "tags": "={{ $json.hashtags.map(h => h.replace('#','')).join(',') }}",
+          "selfDeclaredMadeForKids": false,
+          "notifySubscribers": true
+        },
+        "binaryProperty": "data"
+      },
+      "id": "node-yt-upload",
+      "name": "YouTube: Upload Short",
+      "type": "n8n-nodes-base.youTube",
+      "typeVersion": 1,
+      "position": [3020, 200],
+      "credentials": {
+        "youTubeOAuth2Api": {
+          "id": "youtube-oauth",
+          "name": "YouTube OAuth2"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 15000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph-video.facebook.com/v21.0/{{ $env.FB_PAGE_ID }}/video_reels",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{ $env.FB_PAGE_ACCESS_TOKEN }}" },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"upload_phase\": \"start\"\n}",
+        "options": { "timeout": 60000 }
+      },
+      "id": "node-fb-init",
+      "name": "Facebook: Init Reel Upload",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3020, 400],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 10000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://rupload.facebook.com/video-upload/v21.0/{{ $('Facebook: Init Reel Upload').first().json.video_id }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=OAuth {{ $env.FB_PAGE_ACCESS_TOKEN }}" },
+            { "name": "offset", "value": "0" },
+            { "name": "file_size", "value": "={{ $binary.data.fileSize }}" }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "binaryData",
+        "inputDataFieldName": "data",
+        "options": { "timeout": 600000 }
+      },
+      "id": "node-fb-upload-bin",
+      "name": "Facebook: Upload Binary",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3240, 400],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 15000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://graph.facebook.com/v21.0/{{ $('Facebook: Init Reel Upload').first().json.video_id }}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Authorization", "value": "=Bearer {{ $env.FB_PAGE_ACCESS_TOKEN }}" }
+          ]
+        },
+        "sendQuery": true,
+        "queryParameters": {
+          "parameters": [
+            { "name": "upload_phase", "value": "finish" },
+            { "name": "video_state", "value": "SCHEDULED" },
+            { "name": "scheduled_publish_time", "value": "={{ Math.floor($now.plus({minutes: 15}).toSeconds()) }}" },
+            { "name": "description", "value": "={{ $('Merge Drive Info').first().json.fbCaption }}\n\n{{ $('Merge Drive Info').first().json.hashtagString }}" }
+          ]
+        },
+        "options": { "timeout": 60000 }
+      },
+      "id": "node-fb-publish",
+      "name": "Facebook: Publish Reel",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [3460, 400],
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 15000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Aggregate upload results from both branches\nconst merged = $('Merge Drive Info').first().json;\nlet ytUrl = '', ytId = '', ytStatus = 'failed';\ntry {\n  const yt = $('YouTube: Upload Short').first().json;\n  ytId = yt.id || '';\n  ytUrl = ytId ? `https://youtube.com/shorts/${ytId}` : '';\n  ytStatus = ytId ? 'scheduled' : 'failed';\n} catch (e) { ytStatus = 'failed'; }\nlet fbId = '', fbUrl = '', fbStatus = 'failed';\ntry {\n  const fb = $('Facebook: Publish Reel').first().json;\n  fbId = fb.id || $('Facebook: Init Reel Upload').first().json.video_id || '';\n  fbUrl = fbId ? `https://www.facebook.com/reel/${fbId}` : '';\n  fbStatus = (fb.success === true || fbId) ? 'scheduled' : 'failed';\n} catch (e) { fbStatus = 'failed'; }\nreturn [{ json: { ...merged, ytId, ytUrl, ytStatus, fbId, fbUrl, fbStatus, finalStatus: (ytStatus === 'scheduled' || fbStatus === 'scheduled') ? 'published' : 'partial_failure', completedAt: new Date().toISOString() } }];"
+      },
+      "id": "node-aggregate-results",
+      "name": "Aggregate Upload Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3680, 300]
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "append",
+        "documentId": { "__rl": true, "value": "={{ $env.GOOGLE_SHEETS_DOCUMENT_ID }}", "mode": "id" },
+        "sheetName": { "__rl": true, "value": "Videos", "mode": "name" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "run_id": "={{ $json.runId }}",
+            "completed_at": "={{ $json.completedAt }}",
+            "niche": "={{ $json.selectedNiche }}",
+            "idea_title": "={{ $json.ideaTitle }}",
+            "veo_prompt": "={{ $json.veoPrompt }}",
+            "yt_title": "={{ $json.ytTitle }}",
+            "yt_description": "={{ $json.ytDescription }}",
+            "fb_caption": "={{ $json.fbCaption }}",
+            "hashtags": "={{ $json.hashtagString }}",
+            "drive_url": "={{ $json.driveUrl }}",
+            "youtube_url": "={{ $json.ytUrl }}",
+            "facebook_url": "={{ $json.fbUrl }}",
+            "yt_status": "={{ $json.ytStatus }}",
+            "fb_status": "={{ $json.fbStatus }}",
+            "final_status": "={{ $json.finalStatus }}"
+          }
+        }
+      },
+      "id": "node-save-video",
+      "name": "Save Video Record",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [3900, 300],
+      "credentials": {
+        "googleApi": {
+          "id": "google-service-account",
+          "name": "Google Service Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "authentication": "serviceAccount",
+        "operation": "append",
+        "documentId": { "__rl": true, "value": "={{ $env.GOOGLE_SHEETS_DOCUMENT_ID }}", "mode": "id" },
+        "sheetName": { "__rl": true, "value": "Logs", "mode": "name" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "timestamp": "={{ new Date().toISOString() }}",
+            "run_id": "={{ $json.runId }}",
+            "level": "INFO",
+            "stage": "complete",
+            "message": "=Pipeline completed: YT={{ $json.ytStatus }}, FB={{ $json.fbStatus }}",
+            "details": "={{ JSON.stringify({ ytUrl: $json.ytUrl, fbUrl: $json.fbUrl, driveUrl: $json.driveUrl }) }}"
+          }
+        }
+      },
+      "id": "node-log-success",
+      "name": "Log: Success",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [4120, 300],
+      "credentials": {
+        "googleApi": {
+          "id": "google-service-account",
+          "name": "Google Service Account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "workflowId": { "__rl": true, "value": "={{ $env.ERROR_HANDLER_WORKFLOW_ID }}", "mode": "id" },
+        "options": {}
+      },
+      "id": "node-error-trigger",
+      "name": "Trigger Error Handler",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.2,
+      "position": [1700, 700]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Collect any error from upstream onError outputs into a normalized payload\nconst errors = $input.all().map(i => i.json);\nconst err = errors[0] || {};\nreturn [{\n  json: {\n    runId: err.runId || ($('Load Character Memory').first()?.json?.runId) || `unknown_${Date.now()}`,\n    stage: err.stage || 'unknown',\n    error: err.error || err.message || JSON.stringify(err).slice(0, 500),\n    timestamp: new Date().toISOString()\n  }\n}];"
+      },
+      "id": "node-error-collect",
+      "name": "Collect Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1480, 700]
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "={{ $env.CRON_SCHEDULE_LOOP || '*/30 * * * *' }}"
+            }
+          ]
+        }
+      },
+      "id": "trigger-poll-loop-helper",
+      "name": "(unused-helper)",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [820, 700],
+      "disabled": true
+    }
+  ],
+  "connections": {
+    "Schedule Trigger (8AM/1PM/7PM)": {
+      "main": [[{ "node": "Load Character Memory", "type": "main", "index": 0 }]]
+    },
+    "Load Character Memory": {
+      "main": [[{ "node": "Read Existing Ideas (Dedup)", "type": "main", "index": 0 }]]
+    },
+    "Read Existing Ideas (Dedup)": {
+      "main": [[{ "node": "Prepare Dedup Context", "type": "main", "index": 0 }]]
+    },
+    "Prepare Dedup Context": {
+      "main": [[{ "node": "Gemini: Generate Idea", "type": "main", "index": 0 }]]
+    },
+    "Gemini: Generate Idea": {
+      "main": [
+        [{ "node": "Parse + Dedup Check", "type": "main", "index": 0 }],
+        [{ "node": "Collect Error", "type": "main", "index": 0 }]
+      ]
+    },
+    "Parse + Dedup Check": {
+      "main": [[{ "node": "Save Idea to Sheets", "type": "main", "index": 0 }]]
+    },
+    "Save Idea to Sheets": {
+      "main": [[{ "node": "Gemini: Build Veo Prompt", "type": "main", "index": 0 }]]
+    },
+    "Gemini: Build Veo Prompt": {
+      "main": [
+        [{ "node": "Parse Veo Prompt", "type": "main", "index": 0 }],
+        [{ "node": "Collect Error", "type": "main", "index": 0 }]
+      ]
+    },
+    "Parse Veo Prompt": {
+      "main": [[{ "node": "Vertex AI Veo: Submit Job", "type": "main", "index": 0 }]]
+    },
+    "Vertex AI Veo: Submit Job": {
+      "main": [
+        [{ "node": "Init Poll State", "type": "main", "index": 0 }],
+        [{ "node": "Collect Error", "type": "main", "index": 0 }]
+      ]
+    },
+    "Init Poll State": {
+      "main": [[{ "node": "Wait 30s", "type": "main", "index": 0 }]]
+    },
+    "Wait 30s": {
+      "main": [[{ "node": "Vertex AI Veo: Poll Status", "type": "main", "index": 0 }]]
+    },
+    "Vertex AI Veo: Poll Status": {
+      "main": [[{ "node": "Evaluate Poll", "type": "main", "index": 0 }]]
+    },
+    "Evaluate Poll": {
+      "main": [[{ "node": "Veo Done?", "type": "main", "index": 0 }]]
+    },
+    "Veo Done?": {
+      "main": [
+        [{ "node": "Build GCS Download URL", "type": "main", "index": 0 }],
+        [{ "node": "Wait 30s", "type": "main", "index": 0 }]
+      ]
+    },
+    "Build GCS Download URL": {
+      "main": [[{ "node": "Download Video from GCS", "type": "main", "index": 0 }]]
+    },
+    "Download Video from GCS": {
+      "main": [[{ "node": "Gemini: Generate Metadata", "type": "main", "index": 0 }]]
+    },
+    "Gemini: Generate Metadata": {
+      "main": [[{ "node": "Parse Metadata", "type": "main", "index": 0 }]]
+    },
+    "Parse Metadata": {
+      "main": [[{ "node": "Upload to Google Drive", "type": "main", "index": 0 }]]
+    },
+    "Upload to Google Drive": {
+      "main": [[{ "node": "Merge Drive Info", "type": "main", "index": 0 }]]
+    },
+    "Merge Drive Info": {
+      "main": [[
+        { "node": "YouTube: Upload Short", "type": "main", "index": 0 },
+        { "node": "Facebook: Init Reel Upload", "type": "main", "index": 0 }
+      ]]
+    },
+    "YouTube: Upload Short": {
+      "main": [
+        [{ "node": "Aggregate Upload Results", "type": "main", "index": 0 }],
+        [{ "node": "Collect Error", "type": "main", "index": 0 }]
+      ]
+    },
+    "Facebook: Init Reel Upload": {
+      "main": [
+        [{ "node": "Facebook: Upload Binary", "type": "main", "index": 0 }],
+        [{ "node": "Collect Error", "type": "main", "index": 0 }]
+      ]
+    },
+    "Facebook: Upload Binary": {
+      "main": [
+        [{ "node": "Facebook: Publish Reel", "type": "main", "index": 0 }],
+        [{ "node": "Collect Error", "type": "main", "index": 0 }]
+      ]
+    },
+    "Facebook: Publish Reel": {
+      "main": [
+        [{ "node": "Aggregate Upload Results", "type": "main", "index": 0 }],
+        [{ "node": "Collect Error", "type": "main", "index": 0 }]
+      ]
+    },
+    "Aggregate Upload Results": {
+      "main": [[{ "node": "Save Video Record", "type": "main", "index": 0 }]]
+    },
+    "Save Video Record": {
+      "main": [[{ "node": "Log: Success", "type": "main", "index": 0 }]]
+    },
+    "Collect Error": {
+      "main": [[{ "node": "Trigger Error Handler", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "saveExecutionProgress": true,
+    "saveManualExecutions": true,
+    "timezone": "={{ $env.TZ || 'UTC' }}"
+  },
+  "staticData": null,
+  "meta": {
+    "instanceId": "ai-video-channel"
+  },
+  "tags": [
+    { "name": "ai-video-channel" },
+    { "name": "production" }
+  ],
+  "active": false,
+  "versionId": "1.0.0"
+}
